@@ -36,10 +36,10 @@ function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densiti
     β = @. 1 / (kboltz_eV * temps)
 
     # precompute number density / partition function for each species in the linelist
-    n_div_Z = map(unique([l.species for l in linelist])) do spec
+    n_div_U = map(unique([l.species for l in linelist])) do spec
         spec => @. (n_densities[spec] / partition_fns[spec](log(temps)))
     end |> Dict
-    if species"H I" in keys(n_div_Z)
+    if species"H I" in keys(n_div_U)
         @error "Atomic hydrogen should not be in the linelist. Korg has built-in hydrogen lines."
     end
 
@@ -87,7 +87,7 @@ function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densiti
 
                 #total wl-integrated absorption coefficient
                 @. amplitude = 10.0^line.log_gf * sigma_line(line.wl) * levels_factor *
-                               n_div_Z[line.species]
+                               n_div_U[line.species]
 
                 ρ_crit .= (line.wl .|> α_cntm) .* cutoff_threshold ./ amplitude
                 inverse_densities .= inverse_gaussian_density.(ρ_crit, σ)
@@ -95,7 +95,6 @@ function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densiti
                 inverse_densities .= inverse_lorentz_density.(ρ_crit, γ)
                 lorentz_line_window = maximum(inverse_densities)
                 window_size = sqrt(lorentz_line_window^2 + doppler_line_window^2)
-                # at present, this line is allocating. Would be good to fix that.
                 lb = searchsortedfirst(λs, line.wl - window_size)
                 ub = searchsortedlast(λs, line.wl + window_size)
                 # not necessary, but is faster as of 8f979cc2c28f45cd7230d9ee31fbfb5a5164eb1d

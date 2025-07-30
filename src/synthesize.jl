@@ -280,7 +280,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
 
     # line contributions to α5
     if tau_scheme == "anchored"
-        α_cntm_5 = [_ -> a for a in copy(α5)] # lambda per layer
+        α_cntm_5 = [_ -> a for a in copy(α_ref)] # lambda per layer
 
         if isotopic_abundances != nothing
           linelist5_adjusted = map(linelist5) do line
@@ -292,7 +292,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
           linelist5_adjusted = linelist5
         end
 
-        line_absorption!(view(α5, :, 1), linelist5_adjusted, Korg.Wavelengths([5000]), get_temps(atm), nₑs,
+        line_absorption!(view(α_ref, :, 1), linelist5_adjusted, Korg.Wavelengths([5000]), get_temps(atm), nₑs,
                          number_densities,
                          partition_funcs, vmic * 1e5, α_cntm_5;
                          cutoff_threshold=line_cutoff_threshold)

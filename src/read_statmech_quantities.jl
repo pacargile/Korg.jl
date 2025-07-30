@@ -186,13 +186,13 @@ function load_atomic_partition_functions(filename=joinpath(_data_dir, "atomic_pa
         end
         spec = elem * " " * ionization
         # this is flat "extrapolation", not linear or cubic
-        partition_funcs[Species(spec)] = CubicSpline(logTs, h5read(filename, spec))
+        partition_funcs[Species(spec)] = CubicSpline(logTs, h5read(filename, spec); extrapolate=true)
     end
 
     #handle the cases with bare nuclei
     all_ones = ones(length(logTs))
-    partition_funcs[species"H II"] = CubicSpline(logTs, all_ones)
-    partition_funcs[species"He III"] = CubicSpline(logTs, all_ones)
+    partition_funcs[species"H II"] = CubicSpline(logTs, all_ones; extrapolate=true)
+    partition_funcs[species"He III"] = CubicSpline(logTs, all_ones; extrapolate=true)
 
     partition_funcs
 end

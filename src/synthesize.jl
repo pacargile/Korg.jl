@@ -135,7 +135,6 @@ result = synthesize(atm, linelist, A_X, (5000, 5100))
   - `isotopic_abundances` (default: `nothing`): a dictionary mapping isotopes to their
     abundances.  This is used to calculate the isotopic abundance of each element in the linelist.
     The default value is nothing meaning the linelist is not corrected for isotopic abundances.
-  - `verbose` (default: `false`): Whether or not to print information about progress, etc.
 """
 function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                     wavelength_params...;
@@ -226,7 +225,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
     # sample_line = linelist[begin]
     
     α_type = promote_type(
-        typeof(sample_layer.tau_5000),
+        typeof(sample_layer.tau_ref),
         typeof(sample_layer.z),
         typeof(sample_layer.temp),
         typeof(sample_layer.electron_number_density),

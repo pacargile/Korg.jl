@@ -1,3 +1,4 @@
+__precompile__(false)
 module Korg
 using Compat: @compat
 _data_dir = joinpath(@__DIR__, "../data")

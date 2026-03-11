@@ -135,6 +135,10 @@ result = synthesize(atm, linelist, A_X, (5000, 5100))
   - `isotopic_abundances` (default: `nothing`): a dictionary mapping isotopes to their
     abundances.  This is used to calculate the isotopic abundance of each element in the linelist.
     The default value is nothing meaning the linelist is not corrected for isotopic abundances.
+  - `fix_electron_density_to_atmosphere` (default: `false`): if `true`, the electron density is fixed to
+    the value given in the model atmosphere, rather than being calculated from the chemical equilibrium
+    solution. This is not physically self-consistent, but can be useful for testing the sensitivity of
+    the spectrum to the electron density.
 """
 function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                     wavelength_params...;
@@ -157,7 +161,9 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                     log_equilibrium_constants=default_log_equilibrium_constants,
                     molecular_cross_sections=[],
                     isotopic_abundances=nothing,
-                    use_chemical_equilibrium_from=nothing,)::SynthesisResult
+                    use_chemical_equilibrium_from=nothing,
+                    fix_electron_density_to_atmosphere=false,
+                    )::SynthesisResult
     wls = if length(wavelength_params) > 1
         @warn "Passing multiple wavelength parameters to `synthesize` is deprecated.  Package them in a tuple instead: synthesize(atm, linelist, A_X, (λ_start, λ_stop))"
         Wavelengths(wavelength_params)
@@ -223,6 +229,12 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
 
     sample_layer = atm.layers[begin]
     # sample_line = linelist[begin]
+
+    alpha_ref_eltype = if (tau_scheme == "anchored") && hasproperty(atm, :alpha_ref) && (atm.alpha_ref !== nothing)
+        eltype(atm.alpha_ref)
+    else
+        Float64
+    end
     
     α_type = promote_type(
         typeof(sample_layer.tau_ref),
@@ -238,7 +250,8 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
         typeof(sample_line.vdW[2]),
         eltype(wls),
         typeof(vmic),
-        eltype(abs_abundances)
+        eltype(abs_abundances),
+        alpha_ref_eltype,
     )
     @assert α_type != Any "α_type inferred as Any — likely due to malformed linelist or atmosphere."
 
@@ -246,7 +259,19 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
     #the absorption coefficient, α, for each wavelength and atmospheric layer
     α = Matrix{α_type}(undef, length(atm.layers), length(wls))
     # each layer's absorption at reference λ. This isn't used with the "anchored" τ scheme.
-    α_ref = Vector{α_type}(undef, length(atm.layers))
+    # α_ref = Vector{α_type}(undef, length(atm.layers))
+    α_ref = (tau_scheme == "anchored") ? Vector{α_type}(undef, length(atm.layers)) : nothing
+
+    use_external_alpha_ref = (tau_scheme == "anchored") &&
+                            hasproperty(atm, :alpha_ref) &&
+                            (getproperty(atm, :alpha_ref) !== nothing)
+
+    if use_external_alpha_ref
+        # sanity
+        length(atm.alpha_ref) == length(atm.layers) ||
+            throw(ArgumentError("atm.alpha_ref length must match number of atmosphere layers"))
+    end
+
     triples = map(enumerate(atm.layers)) do (i, layer)
         nₑ, n_dict = if isnothing(use_chemical_equilibrium_from)
             chemical_equilibrium(layer.temp, layer.number_density,
@@ -254,11 +279,37 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                                  abs_abundances, ionization_energies,
                                  partition_funcs, log_equilibrium_constants;
                                  electron_number_density_warn_threshold=electron_number_density_warn_threshold,
-                                 electron_number_density_warn_min_value=electron_number_density_warn_min_value)
+                                 electron_number_density_warn_min_value=electron_number_density_warn_min_value,
+                                 method=:adaptive,
+                                 fix_electron_density_to_atmosphere=fix_electron_density_to_atmosphere)
         else
             let sol = use_chemical_equilibrium_from
                 (sol.electron_number_density[i],
                  Dict(s => sol.number_densities[s][i] for s in keys(sol.number_densities)))
+            end
+        end
+        if fix_electron_density_to_atmosphere
+            r = nₑ / layer.electron_number_density
+            if isfinite(r) && (abs(log10(r)) > 0.05)  # ~12% difference
+                @info "ne mismatch" i=i T=layer.temp r=r ne_calc=nₑ ne_atm=layer.electron_number_density
+            end
+        end
+
+        if isfinite(nₑ) && layer.electron_number_density > 0
+            r = nₑ / layer.electron_number_density
+            if r > 1.2 || r < 0.8   # pick whatever threshold you want
+                @warn "CE ne mismatch" i=i T=layer.temp ne_calc=nₑ ne_atm=layer.electron_number_density ratio=r
+            end
+        end
+
+        if !fix_electron_density_to_atmosphere
+            ne_atm = layer.electron_number_density
+            ne_ce  = nₑ
+            if isfinite(ne_atm) && ne_atm > 0
+                r = ne_ce / ne_atm
+                if (r < 0.5) || (r > 2.0)
+                    @warn "CE nₑ differs strongly from atmosphere" i=i T=layer.temp ne_ce=ne_ce ne_atm=ne_atm ratio=r
+                end
             end
         end
 
@@ -268,9 +319,13 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
         α[i, :] .= α_cntm_layer(wls)
 
         if tau_scheme == "anchored"
-            α_ref[i] = total_continuum_absorption([c_cgs / atm.reference_wavelength], layer.temp,
-                                                  nₑ, n_dict,
-                                                  partition_funcs)[1]
+            if use_external_alpha_ref
+                # use provided α_ref (e.g. Rosseland) instead of monochromatic νref
+                α_ref[i] = atm.alpha_ref[i]  # no convert; preserves Dual
+            else
+                α_ref[i] = total_continuum_absorption([c_cgs / atm.reference_wavelength],
+                                                      layer.temp, nₑ, n_dict, partition_funcs)[1]
+            end
         end
 
         nₑ, n_dict, α_cntm_layer
@@ -285,7 +340,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
     α_cntm = last.(triples)
 
     # line contributions to α5
-    if tau_scheme == "anchored"
+    if tau_scheme == "anchored" && !use_external_alpha_ref
         α_cntm_ref = [_ -> a for a in copy(α_ref)] # lambda per layer
 
         if isotopic_abundances != nothing

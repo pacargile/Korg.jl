@@ -28,15 +28,40 @@ struct PlanarAtmosphereLayer{F1,F2,F3,F4,F5}
 end
 
 """
-    PlanarAtmosphere(layers, reference_wavelength)
+    PlanarAtmosphere(layers, reference_wavelength, alpha_ref (optional))
 
 A planar atmosphere is a flat atmosphere with its photosphere at `z = 0`.  The atmosphere is
-specified by a vector of [`PlanarAtmosphereLayer`](@ref)s.
+specified by a vector of [`PlanarAtmosphereLayer`](@ref)s. The `reference_wavelength` is the 
+wavelength at which the optical depth is defined. Alternatively, the user can specify a 
+reference absorption coefficient `alpha_ref` at the same reference wavelength as tau_ref.
 """
-struct PlanarAtmosphere{F1,F2,F3,F4,F5} <: ModelAtmosphere
+struct PlanarAtmosphere{F1,F2,F3,F4,F5,Fα<:Real} <: ModelAtmosphere
     layers::Vector{PlanarAtmosphereLayer{F1,F2,F3,F4,F5}}
-    reference_wavelength::Float64 # cm
+    reference_wavelength::Float64  # cm
+    alpha_ref::Union{Nothing, Vector{Fα}}
 end
+
+# 3-arg: alpha_ref = nothing
+function PlanarAtmosphere(layers::Vector{PlanarAtmosphereLayer{F1,F2,F3,F4,F5}},
+                          reference_wavelength::Float64,
+                          ::Nothing) where {F1,F2,F3,F4,F5}
+    return PlanarAtmosphere{F1,F2,F3,F4,F5,Float64}(layers, reference_wavelength, nothing)
+end
+
+# 3-arg: alpha_ref provided (autodiff-safe)
+function PlanarAtmosphere(layers::Vector{PlanarAtmosphereLayer{F1,F2,F3,F4,F5}},
+                          reference_wavelength::Float64,
+                          alpha_ref::AbstractVector{Fα}) where {F1,F2,F3,F4,F5,Fα<:Real}
+    length(alpha_ref) == length(layers) ||
+        throw(ArgumentError("alpha_ref length must match number of atmosphere layers"))
+    return PlanarAtmosphere{F1,F2,F3,F4,F5,Fα}(layers, reference_wavelength, collect(alpha_ref))
+end
+
+# Keyword constructor (covers the 2-arg use case too)
+PlanarAtmosphere(layers::Vector{PlanarAtmosphereLayer{F1,F2,F3,F4,F5}},
+                 reference_wavelength::Float64; alpha_ref=nothing) where {F1,F2,F3,F4,F5} =
+    PlanarAtmosphere(layers, reference_wavelength, alpha_ref)
+    
 
 """
     ShellAtmosphereLayer(tau_ref, z, temp, nₑ, n)

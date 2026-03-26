@@ -63,6 +63,7 @@ function prune_linelist(atm, linelist, A_X, wl_params;
 
     λ_ind = 1
     strong_lines = eltype(linelist)[]
+    alpha_lines  = []
     for line in linelist
         if !any((λstart - max_distance * 1e-8) <= line.wl <= (λstop + max_distance * 1e-8)
                 for (λstart, λstop) in eachwindow(wls))
@@ -88,6 +89,7 @@ function prune_linelist(atm, linelist, A_X, wl_params;
 
         if α_λ_line_center > threshold * cntm_sol.alpha[phot_ind, λ_ind]
             push!(strong_lines, line)
+            push!(alpha_lines, α_λ_line_center)
         end
     end
 
@@ -102,9 +104,9 @@ function prune_linelist(atm, linelist, A_X, wl_params;
                              synthesis_kwargs...)
             sum(1 .- sol.flux ./ sol.cntm) / line_center # units don't matter
         end
-        strong_lines[sortperm(approx_EWs; rev=true)]
+        strong_lines[sortperm(approx_EWs; rev=true)], alpha_lines[sortperm(approx_EWs; rev=true)]
     else
-        strong_lines
+        strong_lines, alpha_lines
     end
 end
 

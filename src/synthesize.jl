@@ -297,7 +297,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
 
         if isfinite(nₑ) && layer.electron_number_density > 0
             r = nₑ / layer.electron_number_density
-            if r > 1.2 || r < 0.8   # pick whatever threshold you want
+            if r > 2.0 || r < 0.5   # pick whatever threshold you want
                 @warn "CE ne mismatch" i=i T=layer.temp ne_calc=nₑ ne_atm=layer.electron_number_density ratio=r
             end
         end

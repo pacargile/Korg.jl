@@ -74,10 +74,20 @@ function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densiti
                 # sum up the damping parameters.  These are FWHM (γ is usually the Lorentz HWHM) values in
                 # angular, not cyclical frequency (ω, not ν).
                 Γ .= line.gamma_rad
-                if !ismolecule(line.species)
-                    @. Γ += nₑ * scaled_stark.(line.gamma_stark, temps)
-                    Γ .+= n_densities[species"H_I"] .* scaled_vdW.(Ref(line.vdW), m, temps)
-                end
+                # if !ismolecule(line.species)
+                #     @. Γ += nₑ * scaled_stark.(line.gamma_stark, temps)
+                #     # Γ .+= n_densities[species"H_I"] .* scaled_vdW.(Ref(line.vdW), m, temps)
+                #     # try out vdW for all species, not just H I
+                #     Γ .+= (n_densities[species"H_I"] + 0.42 .* n_densities[species"He I"] + 0.85 * n_densities[species"H 2"]) .* scaled_vdW.(Ref(line.vdW), m, temps)
+                # end
+
+                # TEST OUT BROADING FOR MOL
+                @. Γ += nₑ * scaled_stark.(line.gamma_stark, temps)
+                # Γ .+= n_densities[species"H_I"] .* scaled_vdW.(Ref(line.vdW), m, temps)
+                # try out vdW for all species, not just H I
+                Γ .+= (n_densities[species"H_I"] + 0.42 .* n_densities[species"He I"] + 0.85 * n_densities[species"H 2"]) .* scaled_vdW.(Ref(line.vdW), m, temps)
+
+
                 # calculate the lorentz broadening parameter in wavelength. Doing this involves an
                 # implicit aproximation that λ(ν) is linear over the line window.
                 # the factor of λ²/c is |dλ/dν|, the factor of 1/2π is for angular vs cyclical freqency,

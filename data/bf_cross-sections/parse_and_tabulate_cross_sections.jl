@@ -206,6 +206,189 @@ function parse_NIST_energy_levels(path)
     e_levels
 end
 
+using Interpolations: linear_interpolation
+
+"""
+    unique_sorted_xy(x, y; rtol=1e-10, atol=0.0)
+
+Sort (x,y) by x and remove duplicate / near-duplicate x values.
+Keeps the first point in each cluster.
+"""
+function unique_sorted_xy(
+    x::AbstractVector{<:Real},
+    y::AbstractVector{<:Real};
+    rtol::Float64 = 1e-10,
+    atol::Float64 = 0.0,
+)
+    @assert length(x) == length(y)
+
+    xs = collect(Float64.(x))
+    ys = collect(Float64.(y))
+
+    p = sortperm(xs)
+    xs = xs[p]
+    ys = ys[p]
+
+    keep = trues(length(xs))
+    lastx = xs[1]
+
+    for i in 2:length(xs)
+        if isapprox(xs[i], lastx; rtol=rtol, atol=atol)
+            keep[i] = false
+        else
+            lastx = xs[i]
+        end
+    end
+
+    return xs[keep], ys[keep]
+end
+
+
+"""
+    smooth_bf_cross_section_AP(Es, σs; delta=0.03, safetysigma=5.0,
+                               minimumnumber=10, maxinterp=2000,
+                               duplicate_rtol=1e-10)
+
+Memory-safe Allende-Prieto style smoothing.
+"""
+function smooth_bf_cross_section_AP(
+    Es::AbstractVector{<:Real},
+    σs::AbstractVector{<:Real};
+    delta::Float64 = 0.03,
+    safetysigma::Float64 = 5.0,
+    minimumnumber::Int = 10,
+    maxinterp::Int = 2000,
+    duplicate_rtol::Float64 = 1e-10,
+)
+    @assert length(Es) == length(σs)
+    @assert length(Es) >= 2
+
+    # Remove duplicates instead of nudging them by nextfloat
+    x, y = unique_sorted_xy(Es, σs; rtol=duplicate_rtol)
+
+    @assert length(x) >= 2 "Need at least two unique energy points after deduplication"
+
+    # Build multiplicative grid
+    nx = Float64[x[1]]
+    while nx[end] < x[end]
+        push!(nx, nx[end] * (1.0 + delta))
+    end
+    if nx[end] > x[end]
+        nx[end] = x[end]
+    end
+
+    y_itp = linear_interpolation(x, y; extrapolation_bc=0.0)
+    σA = zeros(Float64, length(nx))
+
+    trapz(xx, yy) = sum(0.5 .* (yy[1:end-1] .+ yy[2:end]) .* (xx[2:end] .- xx[1:end-1]))
+
+    for i in eachindex(nx)
+        x0 = nx[i]
+        local_halfwidth = safetysigma * x0 * delta
+        nearby = findall(abs.(x .- x0) .<= local_halfwidth)
+
+        if length(nearby) > minimumnumber
+            shortx = x[nearby]
+            dx = diff(shortx)
+
+            # Ignore tiny / pathological spacings
+            posdx = dx[dx .> max(eps(x0), 1e-12 * x0)]
+
+            if !isempty(posdx)
+                minstep = minimum(posdx)
+
+                interval1 = 2.0 * safetysigma * x0 * delta
+                interval2 = x0 - x[1] + safetysigma * x0 * delta
+                interval3 = nx[end] - x0 + safetysigma * x0 * delta
+                interval = min(interval1, interval2, interval3)
+
+                ninterp = floor(Int, interval / minstep)
+
+                # Hard safety cap against runaway allocations
+                ninterp = clamp(ninterp, 2, maxinterp)
+
+                xstart = max(x0 * (1.0 - safetysigma * delta), x[1])
+                xx = xstart .+ (0:ninterp-1) .* (interval / (ninterp - 1))
+                yy = y_itp.(xx)
+
+                σg = x0 * delta
+                gauss = @. exp(-0.5 * ((xx - x0) / σg)^2)
+
+                denom = trapz(xx, gauss)
+                σA[i] = denom > 0.0 ? trapz(xx, yy .* gauss) / denom : y_itp(x0)
+            else
+                σA[i] = y_itp(x0)
+            end
+        else
+            σA[i] = y_itp(x0)
+        end
+    end
+
+    return nx, σA
+end
+
+function smooth_bf_cross_section_AP_local(
+    Es::AbstractVector{<:Real},
+    σs::AbstractVector{<:Real};
+    delta::Float64 = 0.03,
+    safetysigma::Float64 = 5.0,
+    minimumnumber::Int = 10,
+    duplicate_rtol::Float64 = 1e-10,
+)
+    @assert length(Es) == length(σs)
+    @assert length(Es) >= 2
+
+    x, y = unique_sorted_xy(Es, σs; rtol=duplicate_rtol)
+
+    # The AP smoothing uses a multiplicative energy grid, so x must be > 0.
+    mask = x .> 0.0
+    x = x[mask]
+    y = y[mask]
+
+    if length(x) < 2
+        return x, y
+    end
+
+    nx = Float64[x[1]]
+    while nx[end] < x[end]
+        push!(nx, nx[end] * (1.0 + delta))
+    end
+    if nx[end] > x[end]
+        nx[end] = x[end]
+    end
+
+    y_itp = linear_interpolation(x, y; extrapolation_bc=0.0)
+    σA = zeros(Float64, length(nx))
+
+    trapz(xx, yy) = sum(0.5 .* (yy[1:end-1] .+ yy[2:end]) .* (xx[2:end] .- xx[1:end-1]))
+
+    for i in eachindex(nx)
+        x0 = nx[i]
+        halfwidth = safetysigma * x0 * delta
+
+        nearby = findall(abs.(x .- x0) .<= halfwidth)
+
+        if length(nearby) > minimumnumber
+            shortx = x[nearby]
+            shorty = y[nearby]
+
+            σg = x0 * delta
+            g = @. exp(-0.5 * ((shortx - x0) / σg)^2)
+
+            denom = trapz(shortx, g)
+            if denom > 0.0
+                σA[i] = trapz(shortx, shorty .* g) / denom
+            else
+                σA[i] = y_itp(x0)
+            end
+        else
+            σA[i] = y_itp(x0)
+        end
+    end
+
+    return nx, σA
+end
+
 """
 Returns cross section in megabarns summed from all electron configurations for a given species.
 λs should be in cm, Ts in K.  data_dir should contain the local path to Korg_data
@@ -241,7 +424,7 @@ function single_species_bf_cross_section(spec::Species, λs, Ts, data_dir)
                                     Korg.default_partition_funcs[spec], λs, Ts)
 end
 function single_species_bf_cross_section(cross_sections, energy_levels, ionization_energy, U, λs,
-                                         Ts)
+                                         Ts; smooth_bf::Bool=true)
     # convert λ_vals to photon energies in eV
     photon_energies = (hplanck_eV * c_cgs) ./ λs
 
@@ -277,7 +460,23 @@ function single_species_bf_cross_section(cross_sections, energy_levels, ionizati
         Es .+= empirical_binding_energy - topbase_binding_energy
         deduplicate_knots!(Es; move_knots=true) #shift repeat Es to the next float
 
-        σ_itp = linear_interpolation(Es, σs; extrapolation_bc=0.0)
+        mask = Es .> 0.0
+        Es = Es[mask]
+        σs = σs[mask]
+
+        if length(Es) < 2
+            continue
+        end
+
+        # Apply Allende-Prieto style smoothing after threshold correction,
+        # before the final interpolation onto the runtime photon-energy grid.
+        if smooth_bf
+            Es_use, σs_use = smooth_bf_cross_section_AP_local(Es, σs)
+        else
+            Es_use, σs_use = Es, σs
+        end
+
+        σ_itp = linear_interpolation(Es_use, σs_use; extrapolation_bc=0.0)
 
         # g*exp(-βε)/U at each temperature
         weights = g .* exp.(-energy_level .* β) ./ Us

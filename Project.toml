@@ -1,13 +1,14 @@
 name = "Korg"
 uuid = "acafc109-a718-429c-b0e5-afd7f8c7ae46"
-authors = ["Adam Wheeler <adamwhlr@gmail.com>", "Matthew Abruzzo <matthewabruzzo@gmail.com>"]
 version = "1.0.1"
+authors = ["Adam Wheeler <adamwhlr@gmail.com>", "Matthew Abruzzo <matthewabruzzo@gmail.com>"]
 
 [deps]
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 Compat = "34da2185-b29b-5c13-b0c7-acf172513d20"
 DSP = "717857b8-e6f2-59f4-9121-6e50c889abd2"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
 DiffResults = "163ba53b-c6d8-5494-b064-1a9d43ac40c5"
 FITSIO = "525bcba6-941b-5504-bd06-fd0dc1a4d2eb"
 FastGaussQuadrature = "442a2c76-b920-505d-bb47-c5924d526838"
@@ -33,6 +34,7 @@ CSV = "0.8, 0.9, 0.10"
 Compat = "4.10 - 4"
 DSP = "0.7, 0.8"
 DataFrames = "1.7.0"
+DelimitedFiles = "1.9.1"
 DiffResults = "1"
 FITSIO = "0.17.5"
 FastGaussQuadrature = "0.4, 0.5, 1"

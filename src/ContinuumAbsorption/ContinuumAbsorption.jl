@@ -12,6 +12,10 @@ include("absorption_He.jl")
 include("absorption_ff_positive_ion.jl")
 include("absorption_metals_bf.jl")
 include("scattering.jl")
+include("absorption_mol_photodissociation.jl")
+include("absorption_H2_CIA.jl")
+include("absorption_He1_detailed.jl")
+include("absorption_hotop_bf.jl")
 
 """
     total_continuum_absorption(νs, T, nₑ, number_densities, partition_funcs; error_oobounds)
@@ -49,26 +53,47 @@ function total_continuum_absorption(νs, T, nₑ, number_densities::Dict, partit
 
     # Hydrogen continuum absorption
     # note: inclusion of He I ndens below is NOT a typo
+
+    # H I b-f absorption
     α .+= H_I_bf(νs, T, nH_I, number_densities[species"He I"], nₑ,
                  1 / partition_funcs[species"H I"](log(T)))
 
+    # H- b-f and f-f absorption
     Hminus_bf(νs, T, nH_I_div_U, nₑ; kwargs...)
     Hminus_ff(νs, T, nH_I_div_U, nₑ; kwargs...)
+
+    # H2+ b-f and f-f absorption
     H2plus_bf_and_ff(νs, T, nH_I, number_densities[species"H_II"]; kwargs...)
 
-    # He continuum absorption isn't actually important, but here we are
+    # He⁻ free-free (John 1994)
     Heminus_ff(νs, T, number_densities[species"He_I"] / partition_funcs[species"He_I"](log(T)), nₑ;
                kwargs...)
 
-    # ff absorption where participating species are positive ions 
-    # i.e. H I ff is included but not H⁻ ff or He⁻ ff 
+    # He I detailed bound-free (HE1OP port from SYNTHE)
+    # This adds opacity from 10 resolved He I states + high-n levels +
+    # inner-shell ionization + dissolved levels near the series limit.
+    # He I free-free is NOT included here (it's in positive_ion_ff_absorption!).
+    He1_detailed_bf!(α, νs, T, number_densities, partition_funcs)
+
+    # ff absorption where participating species are positive ions
+    # i.e. H I ff is included but not H⁻ ff or He⁻ ff
+    # NOTE: this includes He II ff (Z=2), so He I free-free is covered here
     positive_ion_ff_absorption!(α, νs, T, number_densities, nₑ)
 
     # bf absorption by metals from TOPBase and NORAD
     metal_bf_absorption!(α, νs, T, number_densities)
 
+    # molecular photodissociation (specifically OH and CH)
+    mol_photodissociation_absorption!(α, νs, T, number_densities)
+
+    # H2 collision-induced absorption (CIA)
+    H2_CIA_absorption!(α, νs, T, number_densities)
+
+    # HOTOP bound-free absorption from doubly+ ionized metals
+    hotop_bf_absorption!(α, νs, T, number_densities, partition_funcs)
+
     # scattering
-    α .+= electron_scattering(nₑ)
+    α .+= electron_scattering(nₑ) # Thomson scattering
     α .+= rayleigh(νs, nH_I, number_densities[species"He_I"], number_densities[species"H2"])
 
     α

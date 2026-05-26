@@ -5,6 +5,7 @@ using Interpolations
 include("parse_and_tabulate_cross_sections.jl")
 
 function save_bf_cross_section(f, spec, logTs, νs, ξ)
+    println("... processing ", spec)
     @assert issorted(νs, rev=true) # should be decreasing freq
 
     Ts = 10 .^ logTs
@@ -24,10 +25,11 @@ function save_bf_cross_section(f, spec, logTs, νs, ξ)
 
     # save in order of increasing freq / decreasing wl
     f["cross-sections/"*string(spec), shuffle=(), deflate=6] = reverse(log_σs; dims=1)
+    println("... Saved ", spec)
 end
 
 DATA_DIR = ARGS[1]
-OUT_FILE = "bf_cross-sections.h5"
+OUT_FILE = "bf_cross-sections_APsmooth.h5"
 
 println("writing $OUT_FILE")
 

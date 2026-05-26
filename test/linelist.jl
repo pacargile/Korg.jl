@@ -165,6 +165,17 @@
             @test kurucz_ll[1].vdW[1] ≈ 1.2302687708123812e-7
         end
 
+        @testset "kurucz short/blank lines" begin
+            ll = Korg.read_linelist("data/linelists/gfallvac08oct17-short-lines.stub.dat";
+                                    format="kurucz")
+            # file has 5 lines; at least the non-triply-ionized lines should parse
+            @test length(ll) >= 2
+            # the first line is a normal 160-char line; verify it parses correctly
+            @test ll[1].wl ≈ 0.0007234041763337705
+            @test ll[1].log_gf == -0.826
+            @test ll[1].species == Korg.species"Be_II"
+        end
+
         @testset "kurucz molecular " begin
             fname = "kurucz_cn.txt"
             @test_throws ArgumentError kurucz_ll=Korg.read_linelist("data/linelists/" * fname;
@@ -324,5 +335,16 @@
 
         @test_throws ErrorException Korg.read_linelist("data/linelists/Turbospectrum/badlines";
                                                        format="turbospectrum")
+    end
+
+    @testset "turbospectrum_vac gamma_rad uses correct wavelength" begin
+        # When parsing with vacuum=true, gamma_rad should be computed from the
+        # stored wavelength (no air_to_vacuum conversion).
+        ll_vac = Korg.read_linelist("data/linelists/Turbospectrum/requires_default_gammas";
+                                    format="turbospectrum_vac")
+        for l in ll_vac
+            expected = Korg.approximate_radiative_gamma(l.wl, l.log_gf)
+            @test l.gamma_rad == expected
+        end
     end
 end

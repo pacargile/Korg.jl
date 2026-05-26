@@ -25,7 +25,7 @@ this function, though they can be saved and loaded using [`save_molecular_cross_
 
 # Keyword Arguments
 
-  - `cutoff_alpha` (default: 1e-30): The value of the single-line absorption coefficient (in cm^-1) at
+  - `cutoff_alpha` (default: 1e-32): The value of the single-line absorption coefficient (in cm^-1) at
     which to truncate the profile.
   - `vmic_vals` (default: [(0.0:1/3:1.0)...; 1.5; (2:2/3:(5+1/3))...]): The microturbulence velocities
     at which to precompute the cross-section.
@@ -62,7 +62,11 @@ function MolecularCrossSection(linelist, wl_params; cutoff_alpha=1e-32,
     # (in n_dict).
     Ts = 10 .^ log_temp_vals
     nₑ = zeros(length(log_temp_vals))
-    n_dict = Dict(species => 1 / cutoff_alpha)
+    # Korg will compute the effective broadener number density for vdW broadening, which requires 
+    # number density values for H I, He I, and H2. It will not be used, since only molecular lines 
+    # are present.
+    n_dict = Dict(species => 1 / cutoff_alpha,
+                  species"H I" => NaN, species"H2" => NaN, species"He I" => NaN)
     ξ = 0.0
     cntm = fill(λ -> 1.0, length(log_temp_vals))
 

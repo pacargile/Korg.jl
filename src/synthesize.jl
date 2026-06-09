@@ -281,9 +281,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                                  abs_abundances, ionization_energies,
                                  partition_funcs, log_equilibrium_constants;
                                  electron_number_density_warn_threshold=electron_number_density_warn_threshold,
-                                 electron_number_density_warn_min_value=electron_number_density_warn_min_value,
-                                 method=:adaptive,
-                                 fix_electron_density_to_atmosphere=fix_electron_density_to_atmosphere)
+                                 electron_number_density_warn_min_value=electron_number_density_warn_min_value)
         else
             let sol = use_chemical_equilibrium_from
                 (sol.electron_number_density[i],

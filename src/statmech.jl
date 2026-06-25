@@ -73,12 +73,9 @@ free electron is 2. Note that unlike the molecular equilibrium constants, this i
 of number densities, not partial pressures.
 """
 function Hminus_nK(T)
-    # fraction of H I in ground state
-    #H_I_frac_ground_state = TODO
-
     χ_ea = 0.754204 # [eV] electron affinity used by McLaughlin+ 2017 H⁻ ff cross sections
     # inverse of translational_U for the electron, times U(H⁻)/U(H I) = 1/2, times exp(χ_ea/kT)
-    exp(χ_ea / (kboltz_eV * T)) / (2 * translational_U(electron_mass_cgs, T))
+    exp(χ_ea / (kboltz_eV * T)) / (4 * translational_U(electron_mass_cgs, T))
 end
 
 struct ChemicalEquilibriumError <: Exception
@@ -172,7 +169,7 @@ function chemical_equilibrium(temp, nₜ, model_atm_nₑ, absolute_abundances, i
     end
 
     # neutral atomic species are what's solved for
-    n_neutral = 10.0 .^ solver_zero[1:end-1]
+    n_neutral = 10.0 .^ solver_zero[1:(end-1)]
     number_densities = Dict(Species.(Formula.(1:MAX_ATOMIC_NUMBER), 0) .=> n_neutral)
 
     #now the ionized atomic species
@@ -212,8 +209,7 @@ end
 function _solve_chemical_equilibrium(temp, nₜ, absolute_abundances, neutral_fraction_guess,
                                      nₑ_guess, ionization_energies, partition_fns,
                                      log_equilibrium_constants;
-                                     ftol=1e-8, # TODO?
-                                     minimum_annealing_Δlogξ=0.0625)
+                                     ftol=1e-8, minimum_annealing_Δlogξ=0.0625)
     n_neutral_guess = (nₜ - nₑ_guess) .* absolute_abundances .* neutral_fraction_guess
     x0 = [log10.(n_neutral_guess); log10(nₑ_guess)]
 
@@ -226,8 +222,9 @@ function _solve_chemical_equilibrium(temp, nₜ, absolute_abundances, neutral_fr
     residuals_full! = setup_chemical_equilibrium_residuals(temp, nₜ, absolute_abundances,
                                                            ionization_energies, partition_fns,
                                                            log_equilibrium_constants, 0.0)
-    x, converged, last_inf = clipped_newton(residuals_full!, copy(x0); tol=ftol, max_iter=50,
-                                            max_step=1.0)
+    x, converged,
+    last_inf = clipped_newton(residuals_full!, copy(x0); tol=ftol, max_iter=50,
+                              max_step=1.0)
     if !converged
         # Anneal logξ from -50 (molecules numerically off for Float64s) up to 0, bisecting the
         # interval whenever Newton fails so that we take only as many sub-steps as the regime
@@ -342,7 +339,7 @@ function _solve_chemical_equilibrium(temp::ForwardDiff.Dual{T,V1,P},
     dual_zero
 end
 
-# returns the "residuals!" function that is solved.  
+# returns the "residuals!" function that is solved.
 # This is the "heart" of the chemical/ionization solver.
 function setup_chemical_equilibrium_residuals(T, nₜ, absolute_abundances, ionization_energies,
                                               partition_fns, log_equilibrium_constants, logξ)
@@ -750,8 +747,9 @@ function hummer_mihalas_U_H(T, nH, nHe, ne; use_hubeny_generalization=false)
     # for each level calculate the correction, w, and add the term to U
     # the expression for w comes from Hummer and Mihalas 1988 equation 4.71
     U = 0.0
-    for (E, g, n) in zip(hydrogen_energy_levels, hydrogen_energy_level_degeneracies,
-                         hydrogen_energy_level_n)
+    for (E, g,
+    n) in zip(hydrogen_energy_levels, hydrogen_energy_level_degeneracies,
+              hydrogen_energy_level_n)
         n_eff = sqrt(RydbergH_eV / (RydbergH_eV - E)) # times Z, which is 1 for hydrogen
         w = hummer_mihalas_w(T, n_eff, nH, nHe, ne;
                              use_hubeny_generalization=use_hubeny_generalization)

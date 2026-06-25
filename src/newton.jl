@@ -3,7 +3,7 @@ function clipped_newton(residuals!, x0; tol=1e-8, max_iter=200, max_step=1.0)
     x = copy(x0)
     F = zeros(eltype(x), length(x))
     Fwork = similar(F)
-    inf_norm = oftype(real(zero(eltype(x))), Inf) # TODO could this be streamlined?
+    inf_norm = oftype(real(zero(eltype(x))), Inf) # could this be streamlined?
     for _ in 1:max_iter
         residuals!(F, x)
         inf_norm = maximum(abs, F)
@@ -17,7 +17,7 @@ function clipped_newton(residuals!, x0; tol=1e-8, max_iter=200, max_step=1.0)
         # else, take a step
 
         # compute naïve Newton step
-        # TODO would be nice to not allocate
+        # would be nice to not allocate
         J = ForwardDiff.jacobian((Fout, xin) -> residuals!(Fout, xin), Fwork, x)
         all(isfinite, J) || return x, false, inf_norm
         step = try

@@ -63,12 +63,6 @@ function total_continuum_absorption(νs, T, nₑ, number_densities::Dict, partit
     Heminus_ff(νs, T, number_densities[species"He_I"] / partition_funcs[species"He_I"](log(T)), nₑ;
                kwargs...)
 
-    # He I detailed bound-free (HE1OP port from SYNTHE)
-    # This adds opacity from 10 resolved He I states + high-n levels +
-    # inner-shell ionization + dissolved levels near the series limit.
-    # He I free-free is NOT included here (it's in positive_ion_ff_absorption!).
-    He1_detailed_bf!(α, νs, T, number_densities, partition_funcs)
-
     # ff absorption where participating species are positive ions
     # i.e. H I ff is included but not H⁻ ff or He⁻ ff
     # NOTE: this includes He II ff (Z=2), so He I free-free is covered here
@@ -76,6 +70,14 @@ function total_continuum_absorption(νs, T, nₑ, number_densities::Dict, partit
 
     # bf absorption by metals from TOPBase and NORAD
     metal_bf_absorption!(α, νs, T, number_densities)
+
+    # NEW OPACITY SOURCES FROM SYNTHE
+
+    # He I detailed bound-free (HE1OP port from SYNTHE)
+    # This adds opacity from 10 resolved He I states + high-n levels +
+    # inner-shell ionization + dissolved levels near the series limit.
+    # He I free-free is NOT included here (it's in positive_ion_ff_absorption!).
+    He1_detailed_bf!(α, νs, T, number_densities, partition_funcs)
 
     # molecular photodissociation (specifically OH and CH)
     mol_photodissociation_absorption!(α, νs, T, number_densities)

@@ -71,6 +71,50 @@ const grevesse_2007_solar_abundances = [
     -05.00, -0.52]
 
 """
+solar abundances per Grevesse & Sauval, Space Sci. Rev. 85, 161 (1998).
+
+This is the classic solar mixture underlying the ATLAS9/ATLAS12/SYNTHE and c3k model grids.  Values
+for Z ≤ 30 are the GS98 recommended (photospheric) abundances; heavier elements use the meteoritic
+scale shared with [`grevesse_2007_solar_abundances`](@ref).  N.B. the Kurucz/c3k model atmospheres
+adopt GS98 for the abundant light elements but use slightly different values for a few species
+(e.g. Ti, S, Cl, Mn); for an exact match to a specific model, read that model's own ABUNDANCE table.
+"""
+const grevesse_sauval_1998_solar_abundances = [
+    12.00, 10.93, 1.10, 1.40, 2.55, 8.52, 7.92, 8.83, 4.56, 8.08,
+    6.33, 7.58, 6.47, 7.55, 5.45, 7.33, 5.50, 6.40, 5.12, 6.36,
+    3.17, 5.02, 4.00, 5.67, 5.39, 7.50, 4.92, 6.25, 4.21, 4.60,
+    2.88, 3.58, 2.29, 3.33, 2.56, 3.25, 2.60, 2.92, 2.21, 2.58,
+    1.42, 1.92, -5.00, 1.84, 1.12, 1.66, 0.94, 1.77, 1.60, 2.00,
+    1.00, 2.19, 1.51, 2.24, 1.07, 2.17, 1.13, 1.70, 0.58, 1.45,
+    -5.00, 1.00, 0.52, 1.11, 0.28, 1.14, 0.51, 0.93, 0.00, 1.08,
+    0.06, 0.88, -0.17, 1.11, 0.23, 1.25, 1.38, 1.64, 1.01, 1.13,
+    0.90, 2.00, 0.65, -5.00, -5.00, -5.00, -5.00, -5.00, -5.00, 0.06,
+    -5.00, -0.52]
+
+"""
+Kurucz `SOLARP` solar mixture — the abundances baked into the ATLAS9/ATLAS12/SYNTHE and c3k model
+atmosphere grids.  It is Grevesse & Sauval (1998) with the *meteoritic* value preferred for elements
+where the meteoritic determination differs from (and is more precise than) the photospheric one
+(e.g. Ti 4.94 not 5.02, S 7.20 not 7.33, Cl 5.28, Mn 5.53, Sc 3.10, …), while the volatiles that are
+depleted in / absent from meteorites (H, He, C, N, O, Ne, Ar) keep their GS98 photospheric values.
+
+Use this (not [`grevesse_2007_solar_abundances`](@ref)) when comparing Korg to an ATLAS/SYNTHE/c3k
+model so both codes see the same composition.  Values transcribed from the feh+0.00/afe+0.0 c3k
+ABUNDANCE table (A(X) on the usual log₁₀ scale with A(H)=12); radioactive/absent elements → -5.
+"""
+const kurucz_solar_abundances = [
+    12.000, 10.930, 1.046, 1.416, 2.786, 8.516, 7.916, 8.826, 4.476, 8.076,
+    6.316, 7.576, 6.486, 7.556, 5.556, 7.196, 5.276, 6.396, 5.126, 6.346,
+    3.096, 4.936, 4.016, 5.686, 5.526, 7.496, 4.906, 6.246, 4.286, 4.666,
+    3.126, 3.626, 2.366, 3.406, 2.626, 3.306, 2.406, 2.916, 2.226, 2.606,
+    1.396, 1.966, -5.00, 1.826, 1.096, 1.696, 1.236, 1.756, 0.816, 2.136,
+    1.026, 2.236, 1.506, 2.166, 1.126, 2.216, 1.216, 1.626, 0.796, 1.486,
+    -5.00, 0.976, 0.546, 1.086, 0.346, 1.166, 0.506, 0.966, 0.146, 0.956,
+    0.126, 0.746, -0.134, 0.686, 0.276, 1.386, 1.366, 1.686, 0.846, 1.126,
+    0.826, 2.056, 0.706, -5.00, -5.00, -5.00, -5.00, -5.00, -5.00, 0.086,
+    -5.00, -0.504]
+
+"""
     Solar abundances from Bergemann, Lodders, and Palme (2025)
     https://zenodo.org/records/14988840
     Solar convective-zone abundances are used when available, chondritic abundance are used otherwise.

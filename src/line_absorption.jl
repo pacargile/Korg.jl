@@ -88,9 +88,10 @@ function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densiti
                 # sum up the damping parameters.  These are FWHM (γ is usually the Lorentz HWHM) values in
                 # angular, not cyclical frequency (ω, not ν).
                 Γ .= line.gamma_rad
+                Γ .+= n_eff_vdW .* scaled_vdW.(Ref(line.vdW), m, temps)   # now also for molecules
                 if !ismolecule(line.species)
                     @. Γ += nₑ * scaled_stark.(line.gamma_stark, temps)
-                    Γ .+= n_eff_vdW .* scaled_vdW.(Ref(line.vdW), m, temps)
+                    # Γ .+= n_eff_vdW .* scaled_vdW.(Ref(line.vdW), m, temps)
                 end
                 # calculate the lorentz broadening parameter in wavelength. Doing this involves an
                 # implicit aproximation that λ(ν) is linear over the line window.

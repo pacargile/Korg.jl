@@ -1,5 +1,5 @@
 using Interpolations: linear_interpolation
-import .ContinuumAbsorption: total_continuum_absorption
+import .ContinuumAbsorption: total_continuum_absorption, continuum_absorption_and_scattering
 using .RadiativeTransfer
 
 """
@@ -141,6 +141,14 @@ result = synthesize(atm, linelist, A_X, (5000, 5100))
     the value given in the model atmosphere, rather than being calculated from the chemical equilibrium
     solution. This is not physically self-consistent, but can be useful for testing the sensitivity of
     the spectrum to the electron density.
+  - `coherent_scattering` (default: `false`): if `true`, treat continuum scattering (electron/Thomson +
+    Rayleigh) as *coherent scattering* in the radiative transfer, solving the source function
+    `S = (1-a)B + a·J` (albedo `a = α_scat/α_total`) by accelerated Λ-iteration, rather than lumping
+    scattering into the extinction with `S = B` (thermal absorption).  This brightens the emergent flux
+    where the scattering albedo is large (the metal-poor near-UV).  The scattering source function is
+    solved on the continuum grid and its mean intensity `J` interpolated onto the synthesis grid; line
+    opacity dilutes the albedo (so scattering vanishes in line cores).  Currently supported only for
+    planar atmospheres with the "anchored" τ scheme.
 """
 function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                     wavelength_params...;
@@ -165,6 +173,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                     isotopic_abundances=nothing,
                     use_chemical_equilibrium_from=nothing,
                     fix_electron_density_to_atmosphere=false,
+                    coherent_scattering=false,
                     )::SynthesisResult
     wls = if length(wavelength_params) > 1
         @warn "Passing multiple wavelength parameters to `synthesize` is deprecated.  Package them in a tuple instead: synthesize(atm, linelist, A_X, (λ_start, λ_stop))"
@@ -175,6 +184,13 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
 
     if isnothing(use_MHD_for_hydrogen_lines)
         use_MHD_for_hydrogen_lines = wls[end] < 13_000 * 1e-8
+    end
+
+    if coherent_scattering
+        (atm isa PlanarAtmosphere) ||
+            throw(ArgumentError("coherent_scattering currently supports only planar atmospheres"))
+        (tau_scheme == "anchored") ||
+            throw(ArgumentError("coherent_scattering currently requires tau_scheme=\"anchored\""))
     end
 
     # Add wavelength bounds check (Rayleigh scattering limitation)
@@ -289,10 +305,27 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
             end
         end
         if fix_electron_density_to_atmosphere
-            r = nₑ / layer.electron_number_density
-            if isfinite(r) && (abs(log10(r)) > 0.05)  # ~12% difference
-                @info "ne mismatch" i=i T=layer.temp r=r ne_calc=nₑ ne_atm=layer.electron_number_density
+            # SYNTHE-like: hold nₑ at the model-atmosphere value and repartition each
+            # element's ionization via Saha at that fixed nₑ (conserving the element's
+            # atomic total).  This makes Korg use the atmosphere's converged electron
+            # density everywhere -- continuum (incl. H⁻) and line opacity -- as SYNTHE does.
+            # (Molecular densities are left at their chem-eq values; negligible for the
+            # atomic-ionization test.)
+            ne_atm = layer.electron_number_density
+            for Z in 1:MAX_ATOMIC_NUMBER
+                sI   = Species(Formula(Z), 0)
+                sII  = Species(Formula(Z), 1)
+                sIII = Species(Formula(Z), 2)
+                ntot = n_dict[sI] + n_dict[sII] + n_dict[sIII]
+                wII, wIII = saha_ion_weights(layer.temp, ne_atm, Z, ionization_energies,
+                                             partition_funcs)
+                denom = 1 + wII + wIII
+                n_dict[sI]   = ntot / denom
+                n_dict[sII]  = wII  * ntot / denom
+                n_dict[sIII] = wIII * ntot / denom
             end
+            n_dict[species"H-"] = Hminus_nK(layer.temp) * n_dict[species"H I"] * ne_atm
+            nₑ = ne_atm
         end
 
         if isfinite(nₑ) && layer.electron_number_density > 0
@@ -313,8 +346,22 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
             end
         end
 
-        α_cntm_vals = reverse(total_continuum_absorption(eachfreq(cntm_wls), layer.temp, nₑ, n_dict,
-                                                         partition_funcs))
+        # continuum opacity on the continuum grid.  When coherent_scattering is on we keep the
+        # scattering coefficient separate (needed for the source-function solve); otherwise we use
+        # the summed total exactly as before (α_cntm_abs_vals / α_cntm_scat_vals stay `nothing`).
+        local α_cntm_abs_vals, α_cntm_scat_vals
+        if coherent_scattering
+            α_cntm_abs_vals, α_cntm_scat_vals = continuum_absorption_and_scattering(
+                eachfreq(cntm_wls), layer.temp, nₑ, n_dict, partition_funcs)
+            α_cntm_abs_vals = reverse(α_cntm_abs_vals)
+            α_cntm_scat_vals = reverse(α_cntm_scat_vals)
+            α_cntm_vals = α_cntm_abs_vals .+ α_cntm_scat_vals
+        else
+            α_cntm_abs_vals = nothing
+            α_cntm_scat_vals = nothing
+            α_cntm_vals = reverse(total_continuum_absorption(eachfreq(cntm_wls), layer.temp, nₑ,
+                                                             n_dict, partition_funcs))
+        end
         α_cntm_layer = linear_interpolation(cntm_wls, α_cntm_vals)
         α[i, :] .= α_cntm_layer(wls)
 
@@ -328,7 +375,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
             end
         end
 
-        nₑ, n_dict, α_cntm_layer
+        nₑ, n_dict, α_cntm_layer, α_cntm_abs_vals, α_cntm_scat_vals
     end
     nₑs = first.(triples)
     #put number densities in a dict of vectors, rather than a vector of dicts.
@@ -337,7 +384,33 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                              for spec in keys(n_dicts[1])
                              if spec != species"H III"])
     #vector of continuum-absorption interpolators
-    α_cntm = last.(triples)
+    α_cntm = getindex.(triples, 3)
+
+    # coherent-scattering source-function solve (continuum grid), if requested.  We solve
+    # S = (1-a)B + a·J on the coarse continuum grid and interpolate J and α_scat onto the fine
+    # synthesis grid; the per-wavelength source function is assembled just before each RT call so the
+    # albedo can be diluted by line opacity (see `scattering_source` below).
+    α_scat_fine = nothing
+    J_fine = nothing
+    if coherent_scattering
+        α_cntm_abs_grid = permutedims(reduce(hcat, getindex.(triples, 4)))   # layers × n_cntm
+        α_cntm_scat_grid = permutedims(reduce(hcat, getindex.(triples, 5)))
+        B_cntm = blackbody.((l -> l.temp).(atm.layers), cntm_wls')           # layers × n_cntm
+        scat_sol = RadiativeTransfer.solve_scattering_source_function(atm, α_cntm_abs_grid,
+                                                                      α_cntm_scat_grid, B_cntm,
+                                                                      mu_values; α_ref=α_ref)
+        J_cntm = scat_sol.mean_intensity
+        # interpolate the (smooth, continuum-dominated) J and α_scat onto the synthesis grid
+        α_scat_fine = similar(α)
+        J_fine = similar(α)
+        for i in 1:length(atm.layers)
+            α_scat_fine[i, :] .= linear_interpolation(cntm_wls, α_cntm_scat_grid[i, :])(wls)
+            J_fine[i, :] .= linear_interpolation(cntm_wls, J_cntm[i, :])(wls)
+        end
+    end
+    # blend the thermal (Planck) source with the scattered mean intensity: S = (1-a)B + a·J, with
+    # albedo a = α_scat / α_total evaluated at the α passed in (continuum-only or continuum+lines).
+    scattering_source(α_total, B) = @. (1 - α_scat_fine / α_total) * B + (α_scat_fine / α_total) * J_fine
 
     # line contributions to α5
     if tau_scheme == "anchored" && !use_external_alpha_ref
@@ -370,7 +443,9 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
     source_fn = blackbody.((l -> l.temp).(atm.layers), wls')
     cntm = nothing
     if return_cntm
-        cntm, _, _, _ = RadiativeTransfer.radiative_transfer(atm, α, source_fn, mu_values;
+        # α here is continuum-only (lines are added below), so the scattering albedo is undiluted
+        cntm_source = coherent_scattering ? scattering_source(α, source_fn) : source_fn
+        cntm, _, _, _ = RadiativeTransfer.radiative_transfer(atm, α, cntm_source, mu_values;
                                                              α_ref=α_ref,
                                                              I_scheme=I_scheme, τ_scheme=tau_scheme)
     end
@@ -403,7 +478,9 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
     interpolate_molecular_cross_sections!(α, molecular_cross_sections, wls, get_temps(atm), vmic,
                                           number_densities)
 
-    flux, intensity, μ_grid, μ_weights = RadiativeTransfer.radiative_transfer(atm, α, source_fn,
+    # α now includes line opacity, so scattering_source dilutes the albedo in line cores
+    full_source = coherent_scattering ? scattering_source(α, source_fn) : source_fn
+    flux, intensity, μ_grid, μ_weights = RadiativeTransfer.radiative_transfer(atm, α, full_source,
                                                                               mu_values;
                                                                               α_ref, I_scheme,
                                                                               τ_scheme=tau_scheme)

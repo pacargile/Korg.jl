@@ -139,6 +139,252 @@ function radiative_transfer(α, S, spatial_coord, μ_points, spherical;
 end
 
 """
+    mean_intensity(atm, α, S, μ_points; α_ref, τ_ref, τ_scheme)
+
+Compute the angle-averaged mean intensity `J` at every atmospheric layer and wavelength, given the
+total extinction `α` and source function `S` (both matrices of shape layers × wavelengths).  Returns
+a matrix `J` of the same shape as `S`.
+
+`J ≡ (1/4π)∮ I dΩ = ½∫₋₁¹ I dμ` is the quantity the coherent-scattering source-function iteration
+needs: the updated source function is `S = (1-a)B + a·J`, where `a` is the scattering albedo.  Unlike
+the flux (which only needs the emergent, outward intensity), `J` requires the intensity in *both*
+hemispheres at *every* depth, so this uses the `"linear"` I-scheme with `include_inward_rays=true`.
+
+This is planar-atmosphere only for now; the coherent-scattering solve targets photospheric continua.
+"""
+function mean_intensity(atm::PlanarAtmosphere, α, S, μ_points;
+                        α_ref=nothing,
+                        τ_ref=isnothing(α_ref) ? nothing : get_tau_refs(atm),
+                        τ_scheme="anchored")
+    # I has shape (n_μ_total, wavelengths, layers).  With include_inward_rays=true the first
+    # length(μ_grid) rays are inward (−μ) and the next length(μ_grid) are the matching outward (+μ)
+    # rays; both are evaluated at every layer.
+    _, I, μ_grid, μ_weights = radiative_transfer(atm, α, S, μ_points;
+                                                 α_ref=α_ref, τ_ref=τ_ref,
+                                                 I_scheme="linear", τ_scheme=τ_scheme,
+                                                 include_inward_rays=true)
+    nμ = length(μ_grid)
+    nlayers, nλ = size(S)
+    J = zeros(eltype(I), size(S))
+    # J = ½∫₋₁¹ I dμ ≈ ½ Σ_m w_m (I_inward,m + I_outward,m); μ_weights sum to 1 over [0,1].
+    # I has shape (n_μ_total, λ, layer); accumulating over m (the fastest axis of I) for each (λ,
+    # layer) keeps the read contiguous and avoids the per-μ slice/transpose temporaries.
+    for λ in 1:nλ
+        for i in 1:nlayers
+            acc = zero(eltype(I))
+            for m in 1:nμ
+                @inbounds acc += 0.5 * μ_weights[m] * (I[m, λ, i] + I[nμ+m, λ, i])
+            end
+            @inbounds J[i, λ] = acc
+        end
+    end
+    J
+end
+
+"""
+    local_lambda_diag_coeff(δ)
+
+The diagonal short-characteristics weight `∂Iₖ/∂Sₖ` for the linear I-scheme along a single ray, as a
+function of the upwind optical-depth interval `δ`.  Derived from [`compute_I_linear!`](@ref): writing
+that recursion as `Iₖ = Iₖ₊₁e^{-δ} + Sₖ(1-e^{-δ}) + m(1-(δ+1)e^{-δ})` with `m=(Sₖ₊₁-Sₖ)/δ`, the
+coefficient of `Sₖ` is `1 - (1-e^{-δ})/δ`.  Uses `expm1` to stay accurate as `δ→0` (where it → δ/2).
+"""
+@inline function local_lambda_diag_coeff(δ)
+    δ == 0 ? zero(δ) : 1 + expm1(-δ) / δ  # = 1 - (1 - exp(-δ))/δ, cancellation-safe
+end
+
+"""
+    lambda_star_diagonal(atm, α, μ_points; α_ref, τ_ref)
+
+Compute the diagonal of the Λ operator, `Λ*ᵢ ≡ ∂Jᵢ/∂Sᵢ`, at every layer and wavelength (a matrix of
+shape layers × wavelengths).  This is the local approximate operator used to accelerate the
+coherent-scattering iteration ([`solve_scattering_source_function`](@ref)).
+
+Λ* is assembled *analytically* from the short-characteristics weights.  For the linear I-scheme the
+response of the intensity at a layer to its own source function is purely local (see
+[`local_lambda_diag_coeff`](@ref)): the outward ray contributes the weight for its downwind interval
+`Δ⁺ᵢ = τᵢ₊₁-τᵢ`, the inward ray the weight for its upwind interval `Δ⁻ᵢ = τᵢ-τᵢ₋₁`, both divided by μ
+(planar rays: along-ray τ = vertical τ / μ).  Angle-averaging with the same μ grid and weights as
+[`mean_intensity`](@ref) (`J = ½∫₋₁¹I dμ`) gives
+
+    Λ*ᵢ = Σ_m ½ w_m [ c(Δ⁺ᵢ/μ_m) + c(Δ⁻ᵢ/μ_m) ]
+
+with boundary conventions: the top inward ray sees no incoming radiation (its term vanishes at i=1),
+and at the bottom (i=N) the outward intensity is seeded from the inward one, so both terms use Δ⁻.
+This costs a single vertical τ pass per wavelength (like one [`mean_intensity`](@ref)) rather than one
+formal solve per layer.  Because Λ* only sets the iteration's *convergence rate* — the converged
+source function is independent of it — dropping the (exponentially small) non-local boundary-reflection
+terms that the full solve would include does not change the result, only the convergence speed.
+See [`lambda_star_diagonal_exact`](@ref) for the reference unit-pulse probe used to validate this.
+"""
+function lambda_star_diagonal(atm::PlanarAtmosphere, α, μ_points;
+                              α_ref=nothing,
+                              τ_ref=isnothing(α_ref) ? nothing : get_tau_refs(atm))
+    nlayers, nλ = size(α)
+    el_type = eltype(α)
+    μ_grid, μ_weights = generate_mu_grid(μ_points)
+    log_τ_ref = log.(τ_ref)
+    # vertical (μ=1) anchored-τ integrand factor: τref/αref · ds/dz with ds/dz = 1
+    integrand_factor = τ_ref ./ α_ref
+
+    Λ = zeros(el_type, nlayers, nλ)
+    τ = Vector{el_type}(undef, nlayers)
+    integrand_buffer = Vector{el_type}(undef, nlayers)
+    for λ_ind in 1:nλ
+        compute_tau_anchored!(τ, view(α, :, λ_ind), integrand_factor, log_τ_ref, integrand_buffer)
+        for i in 1:nlayers
+            Δdown = i < nlayers ? τ[i+1] - τ[i] : zero(el_type)  # downwind interval (outward ray)
+            Δup = i > 1 ? τ[i] - τ[i-1] : zero(el_type)          # upwind interval (inward ray)
+            acc = zero(el_type)
+            for m in eachindex(μ_grid)
+                invμ = 1 / μ_grid[m]
+                c_in = i > 1 ? local_lambda_diag_coeff(Δup * invμ) : zero(el_type)
+                # bottom layer: outward I is seeded from the inward ray ⇒ same (upwind) weight
+                c_out = i < nlayers ? local_lambda_diag_coeff(Δdown * invμ) : c_in
+                acc += 0.5 * μ_weights[m] * (c_in + c_out)
+            end
+            Λ[i, λ_ind] = acc
+        end
+    end
+    Λ
+end
+
+"""
+    lambda_star_diagonal_exact(atm, α, μ_points; α_ref, τ_ref)
+
+Reference implementation of [`lambda_star_diagonal`](@ref) that obtains the Λ diagonal *exactly* by
+probing the formal solver with a unit source-function pulse at one layer at a time: with `S = eⱼ`,
+[`mean_intensity`](@ref) returns column `j` of Λ, whose `j`-th entry is `Λ*ⱼ`.  This costs one formal
+solve per layer (O(N²)), so it is used only to validate the fast analytic operator, not in production.
+"""
+function lambda_star_diagonal_exact(atm::PlanarAtmosphere, α, μ_points;
+                                    α_ref=nothing,
+                                    τ_ref=isnothing(α_ref) ? nothing : get_tau_refs(atm))
+    nlayers, nλ = size(α)
+    Λ = zeros(eltype(α), nlayers, nλ)
+    S_pulse = zeros(eltype(α), nlayers, nλ)
+    for j in 1:nlayers
+        fill!(S_pulse, 0)
+        @views S_pulse[j, :] .= 1
+        J = mean_intensity(atm, α, S_pulse, μ_points; α_ref=α_ref, τ_ref=τ_ref)
+        @views Λ[j, :] .= J[j, :]
+    end
+    Λ
+end
+
+"""
+    ng_accelerate(y0, y1, y2, y3)
+
+Ng (1974) two-parameter acceleration of a fixed-point iteration, applied independently per wavelength
+(column).  `y0` is the newest iterate, `y3` the oldest; all are layers × wavelengths matrices.
+Returns an extrapolated estimate `(1-a-b)y0 + a·y1 + b·y2`, where `a, b` minimize the (relatively
+weighted) residual over layers.  Safeguards: a column is left un-accelerated if its 2×2 system is
+singular or if the extrapolation would produce a non-positive / non-finite source function.
+"""
+function ng_accelerate(y0, y1, y2, y3)
+    nlayers, nλ = size(y0)
+    out = copy(y0)
+    for k in 1:nλ
+        A1 = A2 = B2 = C1 = C2 = zero(eltype(y0))
+        for i in 1:nlayers
+            w = 1 / y0[i, k]^2                       # weight by relative change
+            Q1 = y0[i, k] - 2y1[i, k] + y2[i, k]
+            Q2 = y0[i, k] - y1[i, k] - y2[i, k] + y3[i, k]
+            Q3 = y0[i, k] - y1[i, k]
+            A1 += w * Q1 * Q1
+            A2 += w * Q1 * Q2                        # = B1 (symmetric)
+            B2 += w * Q2 * Q2
+            C1 += w * Q1 * Q3
+            C2 += w * Q2 * Q3
+        end
+        D = A1 * B2 - A2 * A2
+        (abs(D) < 1e-14 * abs(A1 * B2) + 1e-300) && continue  # singular ⇒ keep y0 column
+        a = (C1 * B2 - C2 * A2) / D
+        b = (A1 * C2 - A2 * C1) / D
+        ok = true
+        for i in 1:nlayers
+            val = (1 - a - b) * y0[i, k] + a * y1[i, k] + b * y2[i, k]
+            if !(val > 0) || !isfinite(val)
+                ok = false
+                break
+            end
+            out[i, k] = val
+        end
+        ok || @views out[:, k] .= y0[:, k]           # reject the whole column if any bad value
+    end
+    out
+end
+
+"""
+    solve_scattering_source_function(atm, α_abs, α_scat, B, μ_points; kwargs...)
+
+Solve the coherent (monochromatic, isotropic) scattering source function
+
+    S = (1 - a)·B + a·J,     a = α_scat / (α_abs + α_scat),     J = Λ[S]
+
+by accelerated Λ-iteration (ALI).  `α_abs` (thermal absorption), `α_scat` (scattering), and `B` (the
+thermal source, i.e. the Planck function) are matrices of shape layers × wavelengths;
+[`Korg.ContinuumAbsorption.continuum_absorption_and_scattering`](@ref) supplies `α_abs`/`α_scat`.
+
+Treating scattering thermally (Korg's current default) corresponds to `S = B`; this routine instead
+lets scattered photons redistribute, which brightens the emergent flux where the albedo `a` is large
+(the metal-poor near-UV).  Returns a `NamedTuple` `(; source_function, iterations, final_change,
+albedo, lambda_diag)`.
+
+# Keyword arguments
+
+  - `α_ref`, `τ_ref`: reference opacity / optical depth for the anchored τ scheme (as in
+    [`radiative_transfer`](@ref)).
+  - `tol` (default `1e-4`): convergence threshold on `max|ΔS/S|`.
+  - `maxiter` (default `500`): iteration cap.
+  - `accelerate` (default `true`): apply Ng acceleration every `ng_every` iterations.
+  - `ng_every` (default `4`): Ng cadence.
+  - `lambda_diag` (default `nothing`): a precomputed Λ* diagonal (layers × wavelengths) to use instead
+    of [`lambda_star_diagonal`](@ref).  Only affects the convergence rate, not the converged answer;
+    exposed mainly so tests can inject the exact ([`lambda_star_diagonal_exact`](@ref)) operator.
+  - `verbose` (default `false`): log the per-iteration change.
+"""
+function solve_scattering_source_function(atm::PlanarAtmosphere, α_abs, α_scat, B, μ_points;
+                                          α_ref=nothing,
+                                          τ_ref=isnothing(α_ref) ? nothing : get_tau_refs(atm),
+                                          tol=1e-4, maxiter=500, accelerate=true, ng_every=4,
+                                          lambda_diag=nothing, verbose=false)
+    α_tot = α_abs .+ α_scat
+    # single-scattering albedo, clamped just below 1 so the (1 - aΛ*) denominator stays positive
+    # even in degenerate cells where the absorption opacity underflows to 0 (pure scattering)
+    a = min.(α_scat ./ α_tot, one(eltype(α_tot)) - convert(eltype(α_tot), 1e-8))
+    Λ = isnothing(lambda_diag) ?
+        lambda_star_diagonal(atm, α_tot, μ_points; α_ref=α_ref, τ_ref=τ_ref) : lambda_diag
+    denom = 1 .- a .* Λ                                  # ALI implicit denominator, in (0, 1]
+
+    S = copy(B)                                          # initial guess: the S = B thermal answer
+    history = Vector{typeof(S)}()
+    Δ = convert(eltype(S), Inf)
+    iters = 0
+    for n in 1:maxiter
+        iters = n
+        J = mean_intensity(atm, α_tot, S, μ_points; α_ref=α_ref, τ_ref=τ_ref)
+        # ALI update: S = [(1-a)B + a J - a Λ* S] / (1 - a Λ*)
+        S_new = @. ((1 - a) * B + a * J - a * Λ * S) / denom
+        Δ = maximum(abs.(S_new .- S) ./ abs.(S_new))
+        S = S_new
+        push!(history, copy(S))
+        length(history) > 4 && popfirst!(history)
+        if accelerate && length(history) == 4 && n % ng_every == 0
+            S = ng_accelerate(history[4], history[3], history[2], history[1])
+            history[4] = copy(S)
+        end
+        verbose && @info "coherent scattering" iter=n maxreldiff=Float64(Δ)
+        Δ < tol && break
+    end
+    # final mean intensity consistent with the converged source function (used by callers that need
+    # J on the fine wavelength grid, e.g. synthesize interpolates it across lines)
+    J = mean_intensity(atm, α_tot, S, μ_points; α_ref=α_ref, τ_ref=τ_ref)
+    (; source_function=S, mean_intensity=J, iterations=iters, final_change=Δ, albedo=a,
+     lambda_diag=Λ)
+end
+
+"""
 Compute the intensity along a single ray.
 
 n.b. this function has an additional I_scheme ("linear_flux_only_expint") that radiative_transfer

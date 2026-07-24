@@ -1,5 +1,5 @@
 module ContinuumAbsorption
-export total_continuum_absorption
+export total_continuum_absorption, continuum_absorption_and_scattering
 
 using ..Korg: ionization_energies, Species, @species_str, _data_dir # not sure that this is the best idea
 using ..Korg: Interval, closed_interval, contained, contained_slice, λ_to_ν_bound, hummer_mihalas_w
@@ -42,6 +42,29 @@ The total continuum linear absoprtion coefficient, α, at many frequencies, ν.
 """
 function total_continuum_absorption(νs, T, nₑ, number_densities::Dict, partition_funcs::Dict;
                                     error_oobounds=false)
+    α_abs, α_scat = continuum_absorption_and_scattering(νs, T, nₑ, number_densities,
+                                                        partition_funcs;
+                                                        error_oobounds=error_oobounds)
+    α_abs .+= α_scat # scattering treated as (thermal) absorption, i.e. source function S = B
+    α_abs
+end
+
+"""
+    continuum_absorption_and_scattering(νs, T, nₑ, number_densities, partition_funcs; error_oobounds)
+
+Like [`total_continuum_absorption`](@ref), but returns the tuple `(α_abs, α_scat)` with the
+true (thermally-coupled) absorption coefficient and the coherent-scattering coefficient held
+separately, rather than summed.  `α_scat` is electron (Thomson) scattering plus Rayleigh scattering
+off H I, He I, and H₂.
+
+`total_continuum_absorption` returns `α_abs .+ α_scat`, i.e. it treats scattering as thermal
+absorption (source function `S = B`).  Keeping the two apart is required for coherent-scattering
+radiative transfer, where scattering enters the source function as `a·J` (with albedo
+`a = α_scat / (α_abs + α_scat)`) rather than emitting thermally.  See
+[`total_continuum_absorption`](@ref) for the argument descriptions.
+"""
+function continuum_absorption_and_scattering(νs, T, nₑ, number_densities::Dict,
+                                             partition_funcs::Dict; error_oobounds=false)
     α = zeros(promote_type(eltype(νs), typeof(T), typeof(nₑ), valtype(number_densities)),
               length(νs))
 
@@ -88,11 +111,11 @@ function total_continuum_absorption(νs, T, nₑ, number_densities::Dict, partit
     # HOTOP bound-free absorption from doubly+ ionized metals
     hotop_bf_absorption!(α, νs, T, number_densities, partition_funcs)
 
-    # scattering
-    α .+= electron_scattering(nₑ) # Thomson scattering
-    α .+= rayleigh(νs, nH_I, number_densities[species"He_I"], number_densities[species"H2"])
+    # scattering (kept separate from α; coherent, so it enters RT as a·J, not thermally)
+    α_scat = electron_scattering(nₑ) .+ # Thomson scattering (frequency-independent)
+             rayleigh(νs, nH_I, number_densities[species"He_I"], number_densities[species"H2"])
 
-    α
+    α, α_scat
 end
 
 end

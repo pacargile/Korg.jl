@@ -1,6 +1,7 @@
 using Statistics: quantile
 using Interpolations: linear_interpolation, Flat
 using SparseArrays: spzeros
+using SpecialFunctions: erfc
 
 normal_pdf(Δ, σ) = exp(-0.5 * Δ^2 / σ^2) / √(2π) / σ
 
@@ -228,6 +229,112 @@ function _rotation_kernel_integral_kernel(c1, c2, c3, detuning, Δλrot)
      + 0.5 * c1 * Δλrot * asin(detuning / Δλrot)
      + c2 * (detuning - detuning^3 / (3 * Δλrot^2))) / c3
 end
+
+"""
+    apply_macroturbulence(flux, wls, vmac; window_size=5)
+
+Given a spectrum `flux` sampled at wavelengths `wls`, apply Gray's radial–tangential (RT)
+macroturbulent broadening with characteristic velocity `vmac` (``\\zeta_{RT}``, in km/s), and return
+the broadened flux.
+
+Macroturbulence should *not* be modelled as rotation (i.e. do not fold `vmac` into
+[`apply_rotation`](@ref)).  The disk-integrated RT profile has a roughly Gaussian core with extended
+"limb" shoulders, a distinctly different shape from the limb-darkened rotational ellipse, and the
+difference is visible at high resolution.
+
+The disk-integrated RT profile for the standard single-parameter model (equal radial and tangential
+dispersions ``\\zeta_R = \\zeta_T = \\zeta_{RT}`` and equal surface fractions ``A_R = A_T = 1/2`` —
+Gray 2005, "The Observation and Analysis of Stellar Photospheres", 3rd ed., §17.4, p. 433; see also
+Hirano et al. 2011) is
+```math
+\\Theta_{RT}(\\Delta\\lambda) = \\frac{2\\,|\\Delta\\lambda|}{\\sqrt{\\pi}\\,\\zeta^2}\\,
+    g\\!\\left(\\frac{\\zeta}{|\\Delta\\lambda|}\\right),
+\\qquad g(x) = x\\,e^{-1/x^2} - \\sqrt{\\pi}\\,\\mathrm{erfc}(1/x),
+```
+where ``\\zeta = \\lambda\\,\\zeta_{RT}/c`` is the macroturbulent 1/e half-width expressed in
+wavelength.  ``g`` is the closed form of Gray's disk integral
+``\\int_0^{\\pi/2} \\exp[-(\\Delta\\lambda / \\zeta\\cos\\theta)^2]\\,\\sin\\theta\\,d\\theta``, so no
+numerical quadrature is needed and the kernel is differentiable in `vmac` for use with `ForwardDiff`.
+(When ``\\zeta_R = \\zeta_T`` the radial and tangential terms are identical, so the surface-fraction
+split ``A_R``/``A_T`` has no effect on the profile and is not exposed.)
+
+# Arguments
+
+  - `flux`: the flux vector to broaden
+  - `wls`: wavelengths in any format [described here](@ref wldocs)
+  - `vmac`: the RT macroturbulent velocity ``\\zeta_{RT}`` in km/s.  Following Gray's convention this
+    is the Gaussian 1/e half-width (``\\sqrt{2}\\,\\sigma``), not the standard deviation.
+
+# Keyword Arguments
+
+  - `window_size` (default: 5): how far out to extend the convolution kernel, in units of the
+    macroturbulent width ``\\zeta_{RT}`` (in wavelength).
+
+Like [`apply_LSF`](@ref), this samples the kernel on `wls` and renormalizes it, so `wls` should be a
+fine, locally linearly-spaced grid.  Convolution commutes, so `apply_macroturbulence`,
+[`apply_rotation`](@ref), and [`apply_LSF`](@ref) may be applied in any order.
+"""
+function apply_macroturbulence(flux, wls, vmac; window_size=5)
+    wls = Wavelengths(wls)
+    # promote so the output can hold ForwardDiff.Duals when differentiating w.r.t. vmac alone
+    newflux = similar(flux, promote_type(eltype(flux), typeof(vmac)))
+    lower_index = 1
+    upper_index = length(wls.wl_ranges[1])
+    newflux[lower_index:upper_index] .= _apply_macroturbulence_core(view(flux,
+                                                                         lower_index:upper_index),
+                                                                    wls.wl_ranges[1], vmac,
+                                                                    window_size)
+    for i in 2:length(wls.wl_ranges)
+        lower_index = upper_index + 1
+        upper_index = lower_index + length(wls.wl_ranges[i]) - 1
+        newflux[lower_index:upper_index] .= _apply_macroturbulence_core(view(flux,
+                                                                             lower_index:upper_index),
+                                                                        wls.wl_ranges[i], vmac,
+                                                                        window_size)
+    end
+    newflux
+end
+
+function _apply_macroturbulence_core(flux, wls::StepRangeLen, vmac, window_size=5)
+    if vmac == 0
+        return copy(flux)
+    end
+
+    if first(wls) > 1
+        wls = wls * 1e-8 # Å to cm
+    end
+    vmac *= 1e5 # km/s to cm/s
+
+    newFtype = promote_type(eltype(flux), eltype(wls), typeof(vmac))
+    newF = zeros(newFtype, length(flux))
+
+    for i in 1:length(flux)
+        ζλ = wls[i] * vmac / Korg.c_cgs # macroturbulent 1/e half-width [cm] at this λ
+        halfwindow = window_size * ζλ
+
+        lb = searchsortedfirst(wls, wls[i] - halfwindow)
+        ub = searchsortedlast(wls, wls[i] + halfwindow)
+
+        # sample the RT profile on the grid and renormalize so the kernel is area-preserving
+        ϕ = _rt_macroturbulence_kernel.(wls[lb:ub] .- wls[i], ζλ)
+        ϕ ./= sum(ϕ)
+        newF[i] = sum(view(flux, lb:ub) .* ϕ)
+    end
+    newF
+end
+
+# Gray's disk-integrated radial-tangential macroturbulence profile at wavelength offset `Δλ` (cm),
+# for the standard single-parameter model with macroturbulent 1/e half-width `ζ` (cm; ζ_R = ζ_T).
+function _rt_macroturbulence_kernel(Δλ, ζ)
+    x = abs(Δλ)
+    if x == 0
+        return (2 / sqrt(π)) / ζ
+    end
+    (2 / sqrt(π)) * x / ζ^2 * _macro_disk_integral(ζ / x)
+end
+
+# closed form of ∫₀ˣ exp(-1/u²) du
+_macro_disk_integral(x) = x * exp(-1 / x^2) - sqrt(π) * erfc(1 / x)
 
 """
     air_to_vacuum(λ; cgs=λ<1)

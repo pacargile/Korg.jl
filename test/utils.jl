@@ -135,6 +135,55 @@
         end
     end
 
+    @testset "macroturbulence" begin
+        # Gray's radial-tangential disk integral, computed by brute-force quadrature as a reference
+        # for the closed-form kernel in apply_macroturbulence.  Profile in velocity (km/s), ζ_R = ζ_T.
+        function naive_rt_macro_profile(Δv, ζ)
+            θs = range(1e-8, π / 2 - 1e-8; length=200_000)
+            dθ = step(θs)
+            integrand = @. exp(-(Δv / (ζ * cos(θs)))^2) * sin(θs)
+            2 / sqrt(π) / ζ * sum(integrand) * dθ   # (A_R + A_T) = 1 folded in
+        end
+
+        c_kms = Korg.c_cgs * 1e-5
+
+        @testset for vmac in [0.0, 1e-10, 2.0, 5.0]
+            @testset for wls in [Korg.Wavelengths((5000, 5020)),
+                Korg.Wavelengths([5000:0.002:5012, 5012.002:0.002:5020])]
+                flux = ones(length(wls))
+                spike = length(flux) ÷ 2
+                flux[spike] = 0.0
+                mflux = Korg.apply_macroturbulence(flux, wls, vmac)
+
+                # kernel is area-preserving (convolving 1 - δ preserves the integrated flux)
+                @test sum(flux)≈sum(mflux) rtol=1e-4
+
+                if vmac == 0.0
+                    @test mflux == flux            # no-op passthrough
+                elseif vmac > 1.0 && length(wls.wl_ranges) == 1
+                    # recovered kernel (the dip) should match the brute-force RT profile in shape
+                    dip = 1 .- mflux
+                    λ0 = (wls*1e8)[spike]
+                    Δv = (wls * 1e8 .- λ0) ./ λ0 .* c_kms
+                    ref = naive_rt_macro_profile.(Δv, vmac)
+                    @test dip ./ maximum(dip) ≈ ref ./ maximum(ref) atol=2e-3
+                end
+            end
+        end
+
+        # macroturbulence has a different profile than rotation at equal velocity: at high
+        # resolution the two are not interchangeable (the whole point of the function)
+        wls = Korg.Wavelengths((5000, 5020))
+        flux = ones(length(wls))
+        flux[length(flux)÷2] = 0.0
+        @test !(Korg.apply_macroturbulence(flux, wls, 5.0) ≈ Korg.apply_rotation(flux, wls, 5.0))
+
+        # differentiable in vmac (used as a fit parameter)
+        f(v) = Korg.apply_macroturbulence(flux, wls, v)[length(flux)÷2]
+        d = ForwardDiff.derivative(f, 5.0)
+        @test isfinite(d) && d != 0
+    end
+
     @testset "air <--> vacuum" begin
         wls = collect(2000.0:π:10000.0)
         @test Korg.vacuum_to_air.(Korg.air_to_vacuum.(wls))≈wls rtol=1e-3

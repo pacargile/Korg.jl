@@ -1,0 +1,105 @@
+# Molecular van der Waals broadening: per-species H2 and He widths with a
+# rotational (J) dependence.  Read by src/molecular_broadening.jl.
+#
+#   gamma_L(J) = max(g0 - dgdJ * J_lower, 0.10 * g0)
+#
+# in cm^-1 per ATM of the named perturber, as a Lorentz HALF width at half
+# maximum, at 296 K, with
+#
+#   gamma(T) = gamma_L(J) * (296/T)^n
+#
+# (ExoMol 2024 release paper Sect. 4: P_ref = 1 atm, T_ref = 296 K.  Note ATM,
+# not bar.)  J_lower is the LOWER-state total angular momentum.
+#
+# Korg converts these to its own broadening convention -- the FWHM in angular
+# frequency per perturber, summed over H2, He and H I separately -- in
+# `molecular_vdW_Gamma`.  See that file's header for the conversion and for the
+# differences from ATLAS12/SYNTHE, which uses the same data through a coarser
+# kernel.
+#
+# ---------------------------------------------------------------------------
+# SOURCES
+#
+# g0/n:     ExoMol `.broad` files, https://www.exomol.com/db/<SP>/<ISO>/<ISO>__H2.broad
+#           (and `__He`), built by atlas12's tools/build_mol_broad.py.  Where a
+#           species is J-resolved in ExoMol (H2O, CO, AlH) the tabulated values
+#           are collapsed to a median.
+#
+# dgdJ:     Gharib-Nezhad et al. (2021, ApJS 254, 34; the EXOPLINES database)
+#           Table 1, for the five species that paper covers (TiO, VO, CrH, FeH,
+#           TiH); their g0 is adopted with it, in preference to ExoMol's
+#           rotationally-independent estimate.  The 0.10 floor is their Eq. 5,
+#           which exists to stop the linear decline going negative at high J.
+#           dgdJ = 0 means no J-dependence is known.
+#
+#           For the metal OXIDES the two sources agree well -- TiO 0.100 vs
+#           ExoMol's 0.0882, ~13% -- so adopting GN+21 changes the J-dependence
+#           and not the scale.  For the metal HYDRIDES they do NOT: GN+21 gives
+#           all of CrH, FeH and TiH one group value of 0.075, while ExoMol's
+#           semi-classical estimates are CrH 0.1858 and TiH 0.2286, a factor of
+#           2.5-3.0 higher and in line with its other hydrides (CaH 0.2153,
+#           MgH 0.1918, NaH 0.1709).  GN+21 is adopted for all three so that the
+#           sibling hydrides stay mutually consistent, but the disagreement is
+#           real, unresolved, and larger than anything else in this table.
+#
+# B:        rotational constant, cm^-1.  Used ONLY to population-weight
+#           gamma_L(J) over the thermally populated rotational ladder, since
+#           Korg's `Line` carries no per-line J.
+#
+# ---------------------------------------------------------------------------
+# PROVENANCE -- READ THIS BEFORE QUOTING ANY OF IT TO PERCENT
+#
+# ExoMol has EMPIRICAL H2/He broadening for exactly seven molecules (H2O, NH3,
+# SO2, CH4, PH3, HCN, H2CO), of which only H2O appears here.  Everything else
+# is THEORETICAL, and for the "exotic" pairs -- which is TiO, VO, CaH, CaOH and
+# most of this table -- those are simple semi-classical, ROTATIONALLY
+# INDEPENDENT estimates from molecular masses and kinetic diameters, with
+# n = 0.5 assumed rather than fitted.  That is why most rows carry n exactly
+# 0.500.  Gharib-Nezhad et al. note that there is not a single laboratory
+# measurement for any of the metal oxides or hydrides here, and their J-slopes
+# are themselves assumed by analogy with HCl for large-dipole species.
+#
+# Treat all of it as good to a factor of a few, not to percent.  It is still an
+# enormous improvement on the alternative, which is either no molecular vdW
+# broadening at all (Korg's historical behaviour) or the two hardcoded atomic
+# constants selected on an electronic-state label (Kurucz's, which is 10-50x
+# too large for every electronic band).
+#
+# Five species have no ExoMol file of their own and take a named chemical
+# analogue; the `src` column says which.  (FeH is not one of them despite having
+# no ExoMol file -- it takes its numbers from GN+21 directly.)
+#
+# ---------------------------------------------------------------------------
+# DIFFERENCES FROM atlas12's data/mol_broad.dat
+#
+# 22 species here against SYNTHE's 20.  AlO (Kurucz code 813) and TiH (122) are
+# Korg additions: AlO from its own ExoMol .broad file, TiH from GN+21 Table 1.
+# NEITHER APPEARS IN SYNTHE'S lines.list, so neither is in the synthe2025 master
+# linelist and neither changes any Korg-vs-SYNTHE comparison run on it.  They
+# bite only for linelists that actually carry those species -- e.g. one loaded
+# straight from ExoMol via `load_ExoMol_linelist`.
+#
+# ---------------------------------------------------------------------------
+# species  g0_H2    n_H2   g0_He    n_He  dgdJ_H2  dgdJ_He      B    src
+  CH       0.1076   0.500  0.0600   0.500  0.00000  0.00000  14.190  NH     # first-row hydride
+  NH       0.1076   0.500  0.0600   0.500  0.00000  0.00000  16.340  NH
+  OH       0.1076   0.500  0.0600   0.500  0.00000  0.00000  18.550  NH     # first-row hydride
+  NaH      0.1709   0.500  0.0960   0.500  0.00000  0.00000   4.900  NaH
+  MgH      0.1918   0.500  0.1081   0.500  0.00000  0.00000   5.820  MgH
+  AlH      0.1469   0.509  0.0819   0.501  0.00207  0.00095   6.390  AlH
+  SiH      0.1426   0.500  0.0790   0.500  0.00000  0.00000   7.500  SiH
+  CaH      0.2153   0.500  0.1205   0.500  0.00000  0.00000   4.230  CaH
+  TiH      0.0750   0.500  0.0450   0.500  0.00100  0.00060   5.362  TiH    # g0+dgdJ from GN+21 Tab.1
+  CrH      0.0750   0.500  0.0450   0.500  0.00100  0.00060   6.220  CrH    # g0+dgdJ from GN+21 Tab.1
+  FeH      0.0750   0.500  0.0450   0.500  0.00100  0.00060   6.550  FeH    # g0+dgdJ from GN+21 Tab.1
+  H2       0.0713   0.650  0.0469   0.600  0.00007  0.00004  60.850  CO     # no analogue; H2 quadrupole lines are negligible here
+  C2       0.0713   0.650  0.0469   0.600  0.00007  0.00004   1.820  CO     # first-row C-bearing diatomic
+  CN       0.0713   0.650  0.0469   0.600  0.00007  0.00004   1.900  CO     # first-row C-bearing diatomic
+  CO       0.0713   0.650  0.0469   0.600  0.00007  0.00004   1.930  CO
+  MgO      0.1110   0.500  0.0602   0.500  0.00000  0.00000   0.574  MgO
+  AlO      0.1708   0.500  0.0946   0.500  0.00000  0.00000   0.641  AlO    # ExoMol; absent from GN+21 Tab.1
+  SiO      0.1460   0.500  0.0802   0.500  0.00000  0.00000   0.727  SiO
+  TiO      0.1000   0.500  0.0600   0.500  0.00200  0.00120   0.535  TiO    # g0+dgdJ from GN+21 Tab.1
+  VO       0.1000   0.500  0.0600   0.500  0.00200  0.00120   0.546  VO     # g0+dgdJ from GN+21 Tab.1
+  H2O      0.0876   0.160  0.0241   0.090  0.00393  0.00104  14.500  H2O
+  CaOH     0.2432   0.500  0.1360   0.500  0.00000  0.00000   0.334  CaOH

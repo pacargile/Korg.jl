@@ -51,13 +51,19 @@ function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densiti
     # (a/a_H)^0.4 + (m/m_H)^-0.3
     # species beyond these three are not important.
     # these are in a.u. (not Å), from https://doi.org/10.1080/00268976.2018.1535143
-    a_H = 4.50711
-    a_He = 1.38375
-    a_H2 = 5.503   # ± 0.049 a.u. (in text, not Table 1)
+    a_H = polarizability_H_au
+    a_He = polarizability_He_au
+    a_H2 = polarizability_H2_au   # ± 0.049 a.u. (in text, not Table 1)
     c_He = (a_He / a_H)^0.4 * (atomic_masses[2] / atomic_masses[1])^-0.3
     c_H2 = (a_H2 / a_H)^0.4 * 2^-0.3
     n_eff_vdW = @. n_densities[species"H_I"] + c_He * n_densities[species"He_I"] +
                    c_H2 * n_densities[species"H2"]
+
+    # Molecular lines of species with ExoMol/Gharib-Nezhad+21 broadening data don't use n_eff_vdW at
+    # all: their perturbers are summed individually, with each species' own temperature exponents.
+    # Γ_vdW is line-independent for these, so it's computed once per species here rather than once
+    # per line below.  See molecular_broadening.jl.
+    molecular_Γ_vdW = molecular_vdW_Γs(linelist, temps, n_densities)
 
     n_chunks = tasks_per_thread * Threads.nthreads()
     chunk_size = max(1, length(linelist) ÷ n_chunks + (length(linelist) % n_chunks > 0))
@@ -88,10 +94,17 @@ function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densiti
                 # sum up the damping parameters.  These are FWHM (γ is usually the Lorentz HWHM) values in
                 # angular, not cyclical frequency (ω, not ν).
                 Γ .= line.gamma_rad
-                Γ .+= n_eff_vdW .* scaled_vdW.(Ref(line.vdW), m, temps)   # now also for molecules
+                if haskey(molecular_Γ_vdW, line.species)
+                    # a molecule with per-species ExoMol data: Korg's own treatment overrides
+                    # whatever vdW width the linelist supplied.  See molecular_broadening.jl.
+                    Γ .+= molecular_Γ_vdW[line.species]
+                else
+                    # atoms, and molecules absent from the table, use the linelist's γ_vdW
+                    # (or ABO σ, α) against the effective perturber density.
+                    Γ .+= n_eff_vdW .* scaled_vdW.(Ref(line.vdW), m, temps)   # now also for molecules
+                end
                 if !ismolecule(line.species)
                     @. Γ += nₑ * scaled_stark.(line.gamma_stark, temps)
-                    # Γ .+= n_eff_vdW .* scaled_vdW.(Ref(line.vdW), m, temps)
                 end
                 # calculate the lorentz broadening parameter in wavelength. Doing this involves an
                 # implicit aproximation that λ(ν) is linear over the line window.

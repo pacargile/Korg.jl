@@ -100,33 +100,73 @@ function setup_partition_funcs_and_equilibrium_constants()
 end
 
 """
-    read_Barklem_Collet_logKs(fname)
+    read_Barklem_Collet_logKs(fname; corrections_file=...)
 
 Reads the equilibrium constants from the HDF5 file produced by the Barklem and Collet 2016 paper.
 Returns a Dict from Korg.Species to Korg.CubicSplines from ln(T) to log10(K).
 
-As recommended by [Aquilina+ 2024](https://ui.adsabs.harvard.edu/abs/2024MNRAS.531.4538A/), we
-modify the C2 equilibrium constant reflect the dissociation energy reported by
-[Visser+ 2019](https://doi.org/10.1080/00268976.2018.1564849).
+The dissociation energies B&C adopted are superseded for some species. Rather than regenerate the
+table, we shift its `log10(pK)` onto the better ``D_0`` analytically (see
+[`apply_D0_corrections!`](@ref)). The corrections are data, listed with their sources in
+`data/barklem_collet_2016/D0_corrections.csv`; the file's header documents the choices. They are the
+same 18 species and values used by the ATLAS-12/SYNTHE port, so that the two codes share a
+dissociation-energy scale.
+
+The most consequential is CaH, where B&C's 2.281 eV is a ~0.58 eV outlier that yields roughly 7× too
+much CaH at M-dwarf temperatures. C2 is also corrected, as recommended by
+[Aquilina+ 2024](https://ui.adsabs.harvard.edu/abs/2024MNRAS.531.4538A/); we use
+[Borsovszky+ 2021](https://doi.org/10.1073/pnas.2103160118) (6.248 eV), which supersedes the
+[Visser+ 2019](https://doi.org/10.1080/00268976.2018.1564849) value of 6.24 eV used previously.
 """
-function read_Barklem_Collet_logKs(fname)
+function read_Barklem_Collet_logKs(fname;
+                                   corrections_file=joinpath(_data_dir, "barklem_collet_2016",
+                                                             "D0_corrections.csv"))
     mols = Korg.Species.(h5read(fname, "mols"))
     lnTs = h5read(fname, "lnTs")
     logKs = h5read(fname, "logKs")
 
-    # correct the C2 equilibrium constant from Barklem and Collet to reflect the dissociation
-    # energy reported by Visser+ 2019, as recommended by Aquilina+ 2024.
-    C2ind = findfirst(mols .== Korg.species"C2")
-    BC_C2_E0 = 6.371 # value from Barklem and Collet (in table), eV
-    Visser_C2_E0 = 6.24 # value from Visser+ 2019, eV
-    correction = @. log10(ℯ) / (kboltz_eV * exp(lnTs[C2ind, :])) * (Visser_C2_E0 - BC_C2_E0)
-
-    logKs[C2ind, :] .+= correction
+    apply_D0_corrections!(logKs, lnTs, mols, corrections_file)
 
     map(mols, eachrow(lnTs), eachrow(logKs)) do mol, lnTs, logKs
         mask = isfinite.(lnTs)
         mol => CubicSplines.CubicSpline(lnTs[mask], logKs[mask]; extrapolate=true)
     end |> Dict
+end
+
+"""
+    apply_D0_corrections!(logKs, lnTs, mols, corrections_file)
+
+Shift tabulated dissociation equilibrium constants onto updated dissociation energies, in place.
+
+`logKs` and `lnTs` are `nmols × ntemps` matrices whose rows correspond to `mols`.
+`corrections_file` is a CSV with columns `spec`, `D0_adopted`, `D0_BC16` (eV) and `reference`.
+
+Because `log10(pK)` for the dissociation reaction contains a ``-D_0 / (k T \\ln 10)`` term, and every
+other term is independent of ``D_0``, replacing ``D_0`` is exactly a temperature-dependent offset:
+
+```math
+\\log_{10} K_\\mathrm{corrected}(T) = \\log_{10} K_\\mathrm{tabulated}(T)
+    - \\frac{D_{0,\\mathrm{adopted}} - D_{0,\\mathrm{tabulated}}}{k T \\ln 10}
+```
+
+Note the sign: a *larger* ``D_0`` means a more tightly bound molecule, hence *less* dissociation and
+a *smaller* dissociation constant.
+
+Throws if a species listed in `corrections_file` is absent from `mols`, since that silently means the
+intended correction was never applied.
+"""
+function apply_D0_corrections!(logKs, lnTs, mols, corrections_file)
+    for row in CSV.File(corrections_file; comment="#")
+        spec = Korg.Species(row.spec)
+        ind = findfirst(mols .== spec)
+        if isnothing(ind)
+            throw(ArgumentError("$(corrections_file) has a D0 correction for $(row.spec), which " *
+                                "isn't in the equilibrium constant table."))
+        end
+        ΔD0 = row.D0_adopted - row.D0_BC16
+        @. logKs[ind, :] -= ΔD0 / (kboltz_eV * exp(lnTs[ind, :]) * log(10))
+    end
+    logKs
 end
 
 """
@@ -187,7 +227,8 @@ function load_atomic_partition_functions(filename=joinpath(_data_dir, "atomic_pa
         end
         spec = elem * " " * ionization
         # this is flat "extrapolation", not linear or cubic
-        partition_funcs[Species(spec)] = CubicSpline(logTs, h5read(filename, spec); extrapolate=true)
+        partition_funcs[Species(spec)] = CubicSpline(logTs, h5read(filename, spec);
+                                                     extrapolate=true)
     end
 
     #handle the cases with bare nuclei
@@ -227,4 +268,5 @@ end
 
 #load data when the package is imported.
 const ionization_energies = setup_ionization_energies()
-const default_partition_funcs, default_log_equilibrium_constants = setup_partition_funcs_and_equilibrium_constants()
+const default_partition_funcs,
+      default_log_equilibrium_constants = setup_partition_funcs_and_equilibrium_constants()

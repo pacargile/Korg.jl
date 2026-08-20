@@ -44,6 +44,43 @@
         @test issorted(last.(weights))
     end
 
+    @testset "D0 corrections to Barklem & Collet equilibrium constants" begin
+        # Every species in D0_corrections.csv must have its tabulated logK shifted onto exactly the
+        # adopted D0, and no other species may be touched.  The check is done in eV (an implied D0
+        # shift) rather than in logK, because |logK| reaches ~1e3 at the coldest tabulated knots,
+        # where spline round-off is ~1e-8 in logK but negligible as an energy.
+        # This guards the sign in particular: a larger D0 binds the molecule more tightly, so it must
+        # *lower* the dissociation constant.  Korg had this backwards for C2 before 2026-08.
+        bc_dir = joinpath(Korg._data_dir, "barklem_collet_2016")
+        mols = Korg.Species.(HDF5.h5read(joinpath(bc_dir, "barklem_collet_ks.h5"), "mols"))
+        lnTs = HDF5.h5read(joinpath(bc_dir, "barklem_collet_ks.h5"), "lnTs")
+        raw_logKs = HDF5.h5read(joinpath(bc_dir, "barklem_collet_ks.h5"), "logKs")
+
+        # implied shift in D0 [eV] between Korg's corrected logK and the raw table, at every knot
+        function implied_ΔD0(spec)
+            i = findfirst(mols .== spec)
+            logK = Korg.default_log_equilibrium_constants[spec]
+            [-(logK(lnTs[i, k]) - raw_logKs[i, k]) * Korg.kboltz_eV * exp(lnTs[i, k]) * log(10)
+             for k in axes(lnTs, 2) if isfinite(lnTs[i, k])]
+        end
+
+        corrected = Korg.Species[]
+        for row in Korg.CSV.File(joinpath(bc_dir, "D0_corrections.csv"); comment="#")
+            spec = Korg.Species(row.spec)
+            push!(corrected, spec)
+            @test !isnothing(findfirst(mols .== spec))
+            # effective D0 = D0_BC16 + (the shift Korg applied) must equal D0_adopted
+            @test all(≈(row.D0_adopted; atol=1e-9), row.D0_BC16 .+ implied_ΔD0(spec))
+        end
+        @test Korg.species"CaH" in corrected  # the one that matters for cool dwarfs
+
+        for spec in [Korg.species"TiO", Korg.species"CO", Korg.species"OH", Korg.species"H2",
+                Korg.species"SiO"]
+            @test spec ∉ corrected
+            @test all(≈(0.0; atol=1e-9), implied_ΔD0(spec))
+        end
+    end
+
     @testset "chemical/ionization equilibrium" begin
         #solar abundances
         abs_abundances = @. 10^(Korg.default_solar_abundances - 12)

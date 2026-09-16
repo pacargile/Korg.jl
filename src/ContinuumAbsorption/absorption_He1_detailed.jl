@@ -344,7 +344,11 @@ function He1_detailed_bf!(α::AbstractVector, νs::AbstractVector,
     # 1. Boltzmann populations for 10 resolved levels
     #    pop_i = g_i × exp(-χ_i / kT) × n(He I) / U(He I)
     # ──────────────────────────────────────────────────────────────────
-    pop = Vector{typeof(T)}(undef, 10)
+    # The populations carry n(He I) and U(He I), not just T, so the buffer's element type has to
+    # promote all three -- under ForwardDiff `number_densities` is Dual while `T` is plain Float64,
+    # and a Vector{typeof(T)} here silently breaks autodiff (MethodError: Float64(::Dual)).
+    pop_type = promote_type(typeof(T), valtype(number_densities), typeof(UHe_I))
+    pop = Vector{pop_type}(undef, 10)
     for i in 1:10
         pop[i] = _He1_level_g[i] * exp(-_He1_level_χ_eV[i] / kT_eV) * nHe_I / UHe_I
     end
@@ -353,7 +357,7 @@ function He1_detailed_bf!(α::AbstractVector, νs::AbstractVector,
     # 2. Boltzmann populations for high-n levels (n=4–27)
     #    E_n = 24.587 × (1 - 1/n²) eV;  g_n = 4n²
     # ──────────────────────────────────────────────────────────────────
-    pop_n = Vector{typeof(T)}(undef, 27)
+    pop_n = Vector{pop_type}(undef, 27)
     for n in 4:27
         E_n = _He1_ionization_eV * (1.0 - 1.0 / n^2)
         g_n = 4.0 * n^2

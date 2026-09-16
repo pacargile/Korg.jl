@@ -275,6 +275,11 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
         Float64
     end
 
+    # `vmic` is either a scalar or one value per layer; `promote_type` must see the *number* type
+    # either way.  Passing `typeof(vmic)` for a per-layer vector promotes to Any and trips the
+    # assertion below.
+    vmic_eltype = vmic isa Number ? typeof(vmic) : eltype(vmic)
+
     α_type = promote_type(
         typeof(sample_layer.tau_ref),
         typeof(sample_layer.z),
@@ -288,7 +293,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
         typeof(sample_line.vdW[1]),
         typeof(sample_line.vdW[2]),
         eltype(wls),
-        typeof(vmic),
+        vmic_eltype,
         eltype(abs_abundances),
         alpha_ref_eltype,
     )

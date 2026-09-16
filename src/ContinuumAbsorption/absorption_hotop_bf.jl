@@ -220,7 +220,11 @@ function hotop_bf_absorption!(α::AbstractVector, νs::AbstractVector,
     # Precompute population factors for each unique species in the edge list
     # pop_factor = n(species) / U(species)
     # Cache to avoid recomputing for edges that share the same species
-    pop_cache = Dict{Int, typeof(T)}()
+    # The cached populations are n(X)/U(X), so the value type has to promote the number densities
+    # as well as T -- under ForwardDiff the densities are Dual while T is a plain Float64, and a
+    # Dict{Int,typeof(T)} here silently breaks autodiff (MethodError: Float64(::Dual)).
+    V = promote_type(typeof(T), valtype(number_densities))
+    pop_cache = Dict{Int,V}()
 
     for edge in edges
         if haskey(pop_cache, edge.species_id)
@@ -229,14 +233,14 @@ function hotop_bf_absorption!(α::AbstractVector, νs::AbstractVector,
 
         spec_str = get(_hotop_id_to_korg_species, edge.species_id, nothing)
         if spec_str === nothing
-            pop_cache[edge.species_id] = zero(T)
+            pop_cache[edge.species_id] = zero(V)
             continue
         end
 
         spec = Species(spec_str)
         ndens = get(number_densities, spec, 0.0)
         if ndens <= 0.0
-            pop_cache[edge.species_id] = zero(T)
+            pop_cache[edge.species_id] = zero(V)
             continue
         end
 
@@ -252,7 +256,7 @@ function hotop_bf_absorption!(α::AbstractVector, νs::AbstractVector,
         stim = 1.0 - exp(-h_eV * ν / kT_eV)
 
         # Sum contributions from all edges above threshold
-        α_hotop = zero(T)
+        α_hotop = zero(V)
         for edge in edges
             if ν < edge.ν₀
                 continue

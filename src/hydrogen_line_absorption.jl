@@ -71,9 +71,42 @@ Keyword arguments:
     profiles
   - `use_MHD`: whether or not to use the Mihalas-Daeppen-Hummer formalism to adjust the occupation
     probabilities of each hydrogen orbital for plasma effects.  Default: `true`.
+  - `MHD_method` (default: `:hummer_mihalas`): which occupation-probability formalism to use when
+    `use_MHD` is true.  `:synthe` selects the ATLAS12/SYNTHE Holtsmark-microfield treatment, which
+    dissolves high-n levels *less* aggressively than the default in cool stars (so the high
+    Balmer/Paschen lines stay stronger) but *more* aggressively in hot ones.  See
+    [`Korg.mhd_occupation_w`](@ref).
+
+!!! note "What `MHD_method=:synthe` does to hydrogen lines"
+
+    SYNTHE's synthesis code applies **no** occupation probability to hydrogen lines at all — the
+    `w` formalism appears only in ATLAS12's model-atmosphere opacities.  What it does instead is
+    Kurucz's merged-continuum bookkeeping, and `:synthe` reproduces it here:
+
+     1. the line's `w` factor is dropped;
+     2. every line with `upper ≥ lower + 3` is switched off blueward of the Inglis-Teller merging
+        wavelength `λ_con` and ramps in linearly between `λ_con` and `λ_tail`
+        ([`Korg.synthe_merged_continuum_wavelengths`](@ref));
+     3. the complementary blanket opacity is supplied by `H_I_bf` (see
+        [`Korg.ContinuumAbsorption.H_I_bf`](@ref)), so nothing is lost across the crossover —
+        unlike SYNTHE, Korg books that half as continuum, since that is what it is;
+     4. transitions whose tabulated Stark profiles do not reach the layer's `nₑ` are **clamped** to
+        the highest tabulated density rather than dropped, as SYNTHE does.  Dropping them (Korg's
+        behaviour for the other methods) leaves an A star with no Balmer opacity at all between the
+        limit and ~3700 Å.
+
+    Because SYNTHE applies no `w` to lines, `use_MHD=false` changes nothing under `:synthe` — the
+    occupation probability was already not being used.  The merged-continuum terms are opacity
+    accounting, not level dissolution, so they stay on either way.
+
+    One residual gap: SYNTHE's line list runs to Balmer upper level 80, Korg's Stehlé table stops
+    at 30 (3662 Å).  That only shows where `λ_con` falls blueward of 3662 Å, i.e. below
+    `nₑ ≈ 5e12` cm⁻³; in the layers that actually form a Balmer break `λ_con` is 3670–3695 Å and
+    the tabulated lines cover the whole cross-fade.
 """
 function hydrogen_line_absorption!(αs, λs::Wavelengths, T, nₑ, nH_I, nHe_I, UH_I, ξ, window_size;
-                                   stark_profiles=_hline_stark_profiles, use_MHD=true)
+                                   stark_profiles=_hline_stark_profiles, use_MHD=true,
+                                   MHD_method=:hummer_mihalas)
     # it may make sense for this functionality to move into the Wavelengths type to some extent
     νs = c_cgs ./ λs
     dνdλ = c_cgs ./ λs .^ 2
@@ -86,7 +119,7 @@ function hydrogen_line_absorption!(αs, λs::Wavelengths, T, nₑ, nH_I, nHe_I, 
     # precalculate occupation probabilities
     ws = if use_MHD
         map(1:n_max) do n
-            hummer_mihalas_w(T, n, nH_I, nHe_I, nₑ)
+            mhd_occupation_w(T, n, nH_I, nHe_I, nₑ; MHD_method=MHD_method)
         end
     else
         ones(n_max)
@@ -94,26 +127,49 @@ function hydrogen_line_absorption!(αs, λs::Wavelengths, T, nₑ, nH_I, nHe_I, 
 
     β = 1 / (kboltz_eV * T)
 
+    # SYNTHE replaces the occupation-probability weighting of hydrogen lines with the
+    # Inglis-Teller merged-continuum cross-fade; see the note in the docstring.
+    synthe_merging = MHD_method === :synthe
+
     #This is the Holtsmark field, by which the frequency-unit-detunings are divided for the
     #interpolated stark profiles
     F0 = 1.25e-9 * nₑ^(2 / 3)
     for line in stark_profiles
-        if !all(lbounds(line.λ0.itp)[1:2] .< (T, nₑ) .< ubounds(line.λ0.itp)[1:2])
+        Tᵢ, nₑᵢ, F0ᵢ = T, nₑ, F0
+        if synthe_merging
+            # SYNTHE clamps to the highest tabulated density for the transition rather than
+            # dropping it (`max_dens_idx` in hydrogen_line_profile), and caps the Holtsmark field
+            # to match so the Δα scale stays consistent with the profile it interpolated.
+            lo, hi = lbounds(line.λ0.itp)[1:2], ubounds(line.λ0.itp)[1:2]
+            Tᵢ = clamp(T, lo[1], hi[1])
+            nₑᵢ = clamp(nₑ, lo[2], hi[2])
+            F0ᵢ = 1.25e-9 * nₑᵢ^(2 / 3)
+        elseif !all(lbounds(line.λ0.itp)[1:2] .< (T, nₑ) .< ubounds(line.λ0.itp)[1:2])
             continue #transitions to high levels are omitted for high nₑ and T
         end
-        λ₀ = line.λ0(T, nₑ)
+        λ₀ = line.λ0(Tᵢ, nₑᵢ)
 
         Elo = RydbergH_eV * (1 - 1 / line.lower^2)
         Eup = RydbergH_eV * (1 - 1 / line.upper^2)
 
         # factor of w because the transition can't happen if the upper level doesn't exist
-        levels_factor = ws[line.upper] * (exp(-β * Elo) - exp(-β * Eup)) / UH_I
+        w_line = synthe_merging ? one(eltype(ws)) : ws[line.upper]
+        levels_factor = w_line * (exp(-β * Elo) - exp(-β * Eup)) / UH_I
         amplitude = 10.0^line.log_gf * nH_I * sigma_line(λ₀) * levels_factor
 
         lb = searchsortedfirst(λs, λ₀ - window_size)
         ub = searchsortedlast(λs, λ₀ + window_size)
         if lb >= ub
             continue
+        end
+
+        # SYNTHE's merged-continuum taper: lines this close to the series limit are not separable
+        # blueward of λ_con, where H_I_bf's merged continuum carries the opacity instead.
+        taper = if synthe_merging && line.upper >= line.lower + 3
+            λ_con, λ_tail = synthe_merged_continuum_wavelengths(line.lower, nₑ)
+            synthe_merged_continuum_taper.(view(λs, lb:ub), λ_con, λ_tail)
+        else
+            nothing
         end
         # if it's Halpha, Hbeta, or Hgamma, add the resonant broadening to the absorption vector
         # use the Barklem+ 2000 p-d approximation
@@ -133,23 +189,27 @@ function hydrogen_line_absorption!(αs, λs::Wavelengths, T, nₑ, nH_I, nHe_I, 
 
             σ = doppler_width(λ₀, T, Hmass, ξ)
 
-            view(αs, lb:ub) .+= line_profile.(λ₀, σ, γ, amplitude, view(λs, lb:ub))
+            prof = line_profile.(λ₀, σ, γ, amplitude, view(λs, lb:ub))
+            view(αs, lb:ub) .+= isnothing(taper) ? prof : prof .* taper
         end
 
         # Stehle+ 1999 Stark-broadened profiles
         ν₀ = c_cgs / (λ₀)
-        scaled_Δν = _zero2epsilon.(abs.(view(νs, lb:ub) .- ν₀) ./ F0)
-        dIdν = exp.(line.profile.(T, nₑ, log.(scaled_Δν)))
-        view(αs, lb:ub) .+= dIdν .* view(dνdλ, lb:ub) .* amplitude
+        scaled_Δν = _zero2epsilon.(abs.(view(νs, lb:ub) .- ν₀) ./ F0ᵢ)
+        dIdν = exp.(line.profile.(Tᵢ, nₑᵢ, log.(scaled_Δν)))
+        prof = dIdν .* view(dνdλ, lb:ub) .* amplitude
+        view(αs, lb:ub) .+= isnothing(taper) ? prof : prof .* taper
     end
 
     # now do the Brackett series
     n = 4
     E_low = RydbergH_eV * (1 - 1 / n^2)
+    λ_con_B, λ_tail_B = synthe_merging ? synthe_merged_continuum_wavelengths(n, nₑ) : (0.0, 0.0)
     for m in 5:n_max
         E = RydbergH_eV * (1 / n^2 - 1 / m^2)
         λ0 = hplanck_eV * c_cgs / E # cm
-        levels_factor = ws[m] * exp(-β * E_low) * (1 - exp(-β * E)) / UH_I
+        w_line = synthe_merging ? one(eltype(ws)) : ws[m]
+        levels_factor = w_line * exp(-β * E_low) * (1 - exp(-β * E)) / UH_I
         gf = 2 * n^2 * brackett_oscillator_strength(n, m)
         amplitude = gf * nH_I * sigma_line(λ0) * levels_factor
 
@@ -157,8 +217,87 @@ function hydrogen_line_absorption!(αs, λs::Wavelengths, T, nₑ, nH_I, nHe_I, 
         lb = searchsortedfirst(λs, λ0 - stark_window)
         ub = searchsortedlast(λs, λ0 + stark_window)
 
-        view(αs, lb:ub) .+= stark_profile_itp.(view(λs, lb:ub)) .* amplitude
-        #Main.@infiltrate any(isnan, view(αs, lb:ub))
+        prof = stark_profile_itp.(view(λs, lb:ub)) .* amplitude
+        if synthe_merging && m >= n + 3
+            prof = prof .* synthe_merged_continuum_taper.(view(λs, lb:ub), λ_con_B, λ_tail_B)
+        end
+        view(αs, lb:ub) .+= prof
+    end
+end
+
+
+# ---------------------------------------------------------------------------------------------
+# ATLAS12/SYNTHE merged-continuum bookkeeping.
+#
+# SYNTHE splits the opacity near a hydrogen series limit in two.  In SYNTHE both halves live in its
+# *line* module (`compute_line_opacity`), not in `HOP`; Korg books the blanket half as the
+# continuum opacity it physically is (`ContinuumAbsorption._add_synthe_merged_continuum!`) and keeps
+# only the line half here.  The two halves are:
+#
+#   * a blanket "merged continuum" running from the series limit redward to λ_con, at the full
+#     bound-free threshold cross-section of the lower level, then tapering linearly to zero at
+#     λ_tail (SYNTHE's `CASE DEFAULT` branch, fed by the `CONTINUUM` pseudo-lines in gfall) —
+#     in Korg this is part of `H_I_bf`;
+#   * the resolved high-`n` lines, which are switched off blueward of λ_con and ramp in over the
+#     same λ_con → λ_tail interval (the `ncon ≠ 0` branch for `nbup ≥ nblo+3`).
+#
+# The two tapers are exact complements, so the total is continuous: below λ_con all the opacity is
+# blanket, above λ_tail all of it is resolved lines.  The crossover is set by the Inglis-Teller
+# merging level with SYNTHE's coefficient of 1600 — *not* by the Hummer & Mihalas occupation
+# probability, which is why SYNTHE's synthesis code applies no `w` to hydrogen lines at all.
+# ---------------------------------------------------------------------------------------------
+
+"""
+    synthe_merged_continuum_wavelengths(n_lower, nₑ)
+
+The pair `(λ_con, λ_tail)`, in cm, over which ATLAS12/SYNTHE cross-fades the blanket merged
+continuum of the hydrogen series with lower level `n_lower` into that series' resolved lines.
+
+`λ_con` is the Inglis-Teller merging wavelength: the transition from `n_lower` to
+``n_\\mathrm{merge} = 1600/n_e^{2/15} - 1.5``.  Blueward of it the individual lines are no longer
+separable and all the opacity is carried by the blanket; redward of `λ_tail` (500 cm⁻¹ further to
+the red) all of it is carried by the lines.
+
+This reproduces the arithmetic in SYNTHE's `compute_line_opacity` exactly, including its clamps
+(`λ_con ≤ 2λ_shift`, `λ_tail ≤ 2λ_con`), where `λ_shift` is the `n_lower → 81` transition.
+
+Note the coefficient 1600, which is *larger* than the 1100 ATLAS12's `HLINOP` uses for level
+dissolution.  Kurucz uses it deliberately: here the cutoff is an opacity-accounting device (don't
+double-count the blanket and the lines), not a statement about which levels survive.
+"""
+function synthe_merged_continuum_wavelengths(n_lower, nₑ)
+    # work in cm⁻¹, as SYNTHE does.  χ is used for both the series limit and the level spacing so
+    # that the blanket starts exactly at H_I_bf's bound-free edge.
+    R_H = ionization_energies[1][1] / (hplanck_eV * c_cgs)
+    ν̃_limit = R_H / n_lower^2
+
+    n_merge = 1600 / nₑ^(2 / 15) - 1.5
+    ν̃_merge = ν̃_limit - R_H / n_merge^2   # the n_lower → n_merge transition
+    ν̃_shift = ν̃_limit - R_H / 81^2        # the n_lower → 81 transition
+
+    λ_shift = 1 / ν̃_shift
+    λ_con = ν̃_merge <= 0 ? 2λ_shift : max(λ_shift, 1 / ν̃_merge)
+    # SYNTHE forms λ_tail from λ_con *before* clamping λ_con to 2λ_shift; keep that order.
+    ν̃_tail = 1 / λ_con - 500
+    λ_con = min(2λ_shift, λ_con)
+    λ_tail = ν̃_tail <= 0 ? 2λ_con : min(2λ_con, 1 / ν̃_tail)
+    λ_con, λ_tail
+end
+
+"""
+    synthe_merged_continuum_taper(λ, λ_con, λ_tail)
+
+The fraction of a hydrogen line's opacity that survives SYNTHE's merged-continuum taper at
+wavelength `λ`: 0 blueward of `λ_con`, ramping linearly to 1 at `λ_tail`.  The blanket continuum
+carries the complement, `1 - taper`.
+"""
+function synthe_merged_continuum_taper(λ, λ_con, λ_tail)
+    if λ <= λ_con
+        zero(λ)
+    elseif λ >= λ_tail
+        one(λ)
+    else
+        (λ - λ_con) / (λ_tail - λ_con)
     end
 end
 

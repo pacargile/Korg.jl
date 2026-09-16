@@ -2,7 +2,9 @@ module ContinuumAbsorption
 export total_continuum_absorption, continuum_absorption_and_scattering
 
 using ..Korg: ionization_energies, Species, @species_str, _data_dir # not sure that this is the best idea
-using ..Korg: Interval, closed_interval, contained, contained_slice, λ_to_ν_bound, hummer_mihalas_w
+using ..Korg: Interval, closed_interval, contained, contained_slice, λ_to_ν_bound,
+              hummer_mihalas_w, mhd_occupation_w,
+              synthe_merged_continuum_wavelengths, synthe_merged_continuum_taper
 include("../constants.jl") # I'm not thrilled to duplicate this, but I think it's probably alright
 
 include("bounds_checking.jl") # define helper functions
@@ -18,7 +20,8 @@ include("absorption_He1_detailed.jl")
 include("absorption_hotop_bf.jl")
 
 """
-    total_continuum_absorption(νs, T, nₑ, number_densities, partition_funcs; error_oobounds)
+    total_continuum_absorption(νs, T, nₑ, number_densities, partition_funcs; error_oobounds,
+                               MHD_method)
 
 The total continuum linear absoprtion coefficient, α, at many frequencies, ν.
 
@@ -34,6 +37,9 @@ The total continuum linear absoprtion coefficient, α, at many frequencies, ν.
     frequencies or temperature values that are out of bounds for their implementation. When `false`
     (the default), those absorption sources are ignored at those values. Otherwise, an error is
     thrown.
+  - `MHD_method` (default: `:hummer_mihalas`) selects the occupation-probability formalism used for
+    H I bound-free level dissolution.  Pass `:synthe` for the ATLAS12/SYNTHE treatment or `:none` to
+    switch level dissolution off.  See [`Korg.mhd_occupation_w`](@ref).
 
 !!! note
 
@@ -41,16 +47,18 @@ The total continuum linear absoprtion coefficient, α, at many frequencies, ν.
     sorted `AbstractVector`, it is most effient when passed an  `AbstractRange`.
 """
 function total_continuum_absorption(νs, T, nₑ, number_densities::Dict, partition_funcs::Dict;
-                                    error_oobounds=false)
+                                    error_oobounds=false, MHD_method=:hummer_mihalas)
     α_abs, α_scat = continuum_absorption_and_scattering(νs, T, nₑ, number_densities,
                                                         partition_funcs;
-                                                        error_oobounds=error_oobounds)
+                                                        error_oobounds=error_oobounds,
+                                                        MHD_method=MHD_method)
     α_abs .+= α_scat # scattering treated as (thermal) absorption, i.e. source function S = B
     α_abs
 end
 
 """
-    continuum_absorption_and_scattering(νs, T, nₑ, number_densities, partition_funcs; error_oobounds)
+    continuum_absorption_and_scattering(νs, T, nₑ, number_densities, partition_funcs;
+                                        error_oobounds, MHD_method)
 
 Like [`total_continuum_absorption`](@ref), but returns the tuple `(α_abs, α_scat)` with the
 true (thermally-coupled) absorption coefficient and the coherent-scattering coefficient held
@@ -64,7 +72,8 @@ radiative transfer, where scattering enters the source function as `a·J` (with 
 [`total_continuum_absorption`](@ref) for the argument descriptions.
 """
 function continuum_absorption_and_scattering(νs, T, nₑ, number_densities::Dict,
-                                             partition_funcs::Dict; error_oobounds=false)
+                                             partition_funcs::Dict; error_oobounds=false,
+                                             MHD_method=:hummer_mihalas)
     α = zeros(promote_type(eltype(νs), typeof(T), typeof(nₑ), valtype(number_densities)),
               length(νs))
 
@@ -76,7 +85,8 @@ function continuum_absorption_and_scattering(νs, T, nₑ, number_densities::Dic
 
     # Hydrogen continuum absorption
     # note: inclusion of He I ndens below is NOT a typo
-    α .+= H_I_bf(νs, T, nH_I, number_densities[species"He I"], nₑ, invU_H_I)
+    α .+= H_I_bf(νs, T, nH_I, number_densities[species"He I"], nₑ, invU_H_I;
+                 MHD_method=MHD_method)
 
     Hminus_bf(νs, T, number_densities[species"H-"], nₑ; kwargs...)
     Hminus_ff(νs, T, nH_I * invU_H_I, nₑ; kwargs...)

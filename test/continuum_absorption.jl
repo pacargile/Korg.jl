@@ -566,4 +566,53 @@ using Interpolations: bounds
                                             "inconsistent with the default implementation."),
                                    print_rachet_info=true)
     end
+
+    @testset "H I bf level dissolution: MHD_method" begin
+        # λ = 3646 Å is the Balmer edge.  Blueward of it every n=2 atom can be ionized, so all
+        # formalisms must agree there.  Redward, the three options differ *structurally*:
+        #   :none            - hard edge, no dissolution at all
+        #   :hummer_mihalas  - smears the edge itself (HBOP/Hubeny): the n=2 cross-section is
+        #                      extrapolated redward times 1 - w_upper/w_lower
+        #   :synthe          - ATLAS12 HOP (hard edge + a Kramers pseudo-continuum from the
+        #                      dissolved (1-w_n) fraction of levels n≥7) PLUS SYNTHE's merged
+        #                      continuum, the blanket that keeps the edge from leaving a hole.
+        #                      HOP's edge is sharp; SYNTHE's total opacity is not, because the
+        #                      blanket lives in its line module.  Korg books it here instead.
+        T, nH_I, nHe_I, ne = 10000.0, 1e14, 1e13, 2e14
+        λs = [3600.0, 3644.0, 3648.0, 3700.0, 3800.0] # Å
+        νs = sort(Korg.c_cgs ./ (λs .* 1e-8))
+        α = Dict(m => reverse(Korg.ContinuumAbsorption.H_I_bf(νs, T, nH_I, nHe_I, ne, 0.5;
+                                                              MHD_method=m))
+        for m in [:hummer_mihalas, :synthe, :none])
+
+        # blueward of the break every method agrees to within the w-weighting of the n≥3 levels
+        for i in 1:2
+            @test α[:synthe][i]≈α[:hummer_mihalas][i] rtol=1e-2
+            @test α[:none][i]≈α[:hummer_mihalas][i] rtol=1e-2
+        end
+
+        # only :none keeps a sharp edge: a ~20x drop across 3644 -> 3648 Å
+        @test α[:none][3] < 0.1α[:none][2]
+        # :hummer_mihalas smears the edge, so there is essentially no drop...
+        @test α[:hummer_mihalas][3] > 0.9α[:hummer_mihalas][2]
+        # ...and :synthe's merged continuum holds the edge up just as effectively, by a different
+        # route: a flat blanket at the n=2 threshold cross-section rather than a ν^-3 ramp.
+        @test α[:synthe][3] > 0.9α[:synthe][2]
+        @test α[:synthe][3]≈α[:hummer_mihalas][3] rtol=0.1
+
+        # the two part company red of the Inglis-Teller cross-over, where the blanket has tapered
+        # out and H&M's ramp has not
+        λ_tail = Korg.synthe_merged_continuum_wavelengths(2, ne)[2] * 1e8
+        @test λs[5] > λ_tail
+        @test α[:hummer_mihalas][5] > 1.2α[:synthe][5]
+
+        # :synthe has opacity :none lacks at every wavelength (pseudo-continuum, and the blanket
+        # wherever it reaches)
+        for i in eachindex(λs)
+            @test α[:synthe][i] > α[:none][i]
+        end
+
+        @test_throws ArgumentError Korg.ContinuumAbsorption.H_I_bf(νs, T, nH_I, nHe_I, ne, 0.5;
+                                                                   MHD_method=:nonsense)
+    end
 end

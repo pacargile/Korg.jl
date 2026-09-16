@@ -47,6 +47,59 @@
         @test all(.!isnan.(αs))
     end
 
+    @testset "SYNTHE merged continuum (MHD_method=:synthe)" begin
+        # λ_con / λ_tail must reproduce SYNTHE's compute_line_opacity arithmetic
+        # (inglis = 1600/nₑ^(2/15); n_merge = inglis - 1.5).  Reference values were computed by
+        # transcribing that arithmetic straight out of synthe_module.f90.
+        for (nₑ, λ_con_ref, λ_tail_ref) in [(2.917e13, 3672.2, 3740.9),
+            (5.921e13, 3677.9, 3746.8),
+            (1.261e14, 3685.4, 3754.6),
+            (2.417e14, 3693.5, 3763.0)]
+            λ_con, λ_tail = Korg.synthe_merged_continuum_wavelengths(2, nₑ)
+            @test λ_con * 1e8≈λ_con_ref rtol=1e-4
+            @test λ_tail * 1e8≈λ_tail_ref rtol=1e-4
+        end
+        # denser plasma merges the lines further from the limit
+        @test Korg.synthe_merged_continuum_wavelengths(2, 1e15)[1] >
+              Korg.synthe_merged_continuum_wavelengths(2, 1e13)[1]
+
+        # the taper is a clean 0 -> 1 ramp across [λ_con, λ_tail]
+        λ_con, λ_tail = Korg.synthe_merged_continuum_wavelengths(2, 1.261e14)
+        @test Korg.synthe_merged_continuum_taper(λ_con * 0.99, λ_con, λ_tail) == 0
+        @test Korg.synthe_merged_continuum_taper(λ_tail * 1.01, λ_con, λ_tail) == 1
+        @test Korg.synthe_merged_continuum_taper((λ_con + λ_tail) / 2, λ_con, λ_tail)≈0.5 rtol=1e-6
+
+        # the blanket cross-sections are the ones SYNTHE's CONTINUUM pseudo-lines carry:
+        # gf = 2n²σ_n(edge), i.e. 10^-17.200 × 2, 10^-16.858 × 8, 10^-16.666 × 18
+        for (n, gf_synthe) in [(1, 2 * 10^-17.200), (2, 8 * 10^-16.858), (3, 18 * 10^-16.666)]
+            @test Korg.ContinuumAbsorption.H_I_bf_threshold_cross_section(n)≈gf_synthe rtol=2e-2
+        end
+
+        # The headline requirement: with hydrogen lines on, :synthe must not leave a hole red of
+        # the Balmer limit.  These are the conditions of the τ≈0.24 layer of an ATLAS12 10250/4.00
+        # deck, where SYNTHE's merged continuum is 25x the bare bound-free opacity.
+        T, nₑ, nH_I, nHe_I = 9387.4, 1.261e14, 1.438e14, 1.4e13
+        U = Korg.default_partition_funcs[Korg.species"H_I"](log(T))
+        wls = Korg.Wavelengths(3600:0.5:3800)
+        νs = sort(Korg.c_cgs ./ collect(wls))
+        αs = Dict(map([:synthe, :hummer_mihalas, :none]) do m
+            α = reverse(Korg.ContinuumAbsorption.H_I_bf(νs, T, nH_I, nHe_I, nₑ, 1 / U;
+                                                        MHD_method=m))
+            Korg.hydrogen_line_absorption!(α, wls, T, nₑ, nH_I, nHe_I, U, 2e5, 150e-8;
+                                           MHD_method=m)
+            m => α
+        end)
+        i_blue = searchsortedfirst(wls, 3640e-8) # blue of the Balmer limit
+        i_red = searchsortedfirst(wls, 3660e-8)  # red of it, inside the merged continuum
+        # :synthe and the default now agree across the window the merged continuum fills...
+        @test αs[:synthe][i_red]≈αs[:hummer_mihalas][i_red] rtol=0.05
+        # ...and both are >10x what the bare step leaves behind
+        @test αs[:synthe][i_red] > 10αs[:none][i_red]
+        # the blanket joins continuously onto the bound-free edge, where :none drops off a cliff
+        @test αs[:synthe][i_red] > 0.9αs[:synthe][i_blue]
+        @test αs[:none][i_red] < 0.1αs[:none][i_blue]
+    end
+
     @testset "Brackett line profile centered correctly" begin
         # The Brackett-series Stark profile should peak near the line center.
         # Bug: off-by-one in convolution extraction shifts the profile by one bin.

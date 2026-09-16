@@ -151,4 +151,42 @@
         sol = synthesize(atm_small, [], format_A_X(), (5000, 5000); return_cntm=false)
         @test isnothing(sol.cntm)
     end
+
+    @testset "MHD_method" begin
+        @test_throws ArgumentError synthesize(atm_small, [], format_A_X(), (5000, 5000);
+                                              MHD_method=:not_a_method)
+
+        # the Balmer break region, where the occupation-probability formalism matters.  (The
+        # physics is tested in continuum_absorption.jl; here we just check the plumbing.)
+        wls = (3640, 3700)
+        sol_hm = synthesize(atm_small, [], format_A_X(), wls; MHD_method=:hummer_mihalas)
+        sol_sy = synthesize(atm_small, [], format_A_X(), wls; MHD_method=:synthe)
+        sol_no = synthesize(atm_small, [], format_A_X(), wls; MHD_method=:none)
+
+        # :hummer_mihalas is the default
+        @test sol_hm.flux == synthesize(atm_small, [], format_A_X(), wls).flux
+
+        # all three agree blueward of the Balmer break, where no level dissolution is needed
+        @test sol_hm.cntm[1]≈sol_sy.cntm[1] rtol=1e-3
+        # ...and differ redward of it.  The *sign* of the flux difference is atmosphere-dependent
+        # (see continuum_absorption.jl for the opacity-level physics), but the structural claim is
+        # robust: :synthe and the default both fill the window red of the limit — by different
+        # routes, SYNTHE's merged-continuum blanket vs H&M's smeared edge — so they land within a
+        # few percent of each other, while :none, which has neither, is well away from both.
+        @test sol_hm.cntm[end] != sol_sy.cntm[end]
+        @test sol_sy.cntm[end]≈sol_hm.cntm[end] rtol=0.1
+        @test !isapprox(sol_sy.cntm[end], sol_no.cntm[end]; rtol=0.05)
+        @test !isapprox(sol_hm.cntm[end], sol_no.cntm[end]; rtol=0.05)
+
+        # MHD_method also reaches the hydrogen lines
+        hline_wls = Korg.Wavelengths((3700, 3900))
+        αs_hm = zeros(length(hline_wls))
+        αs_sy = zeros(length(hline_wls))
+        for (αs, m) in [(αs_hm, :hummer_mihalas), (αs_sy, :synthe)]
+            Korg.hydrogen_line_absorption!(αs, hline_wls, 6000.0, 1e13, 1e17, 1e16, 2.0,
+                                           1e5, 150e-8; MHD_method=m)
+        end
+        # SYNTHE keeps high-n upper levels populated, so the high Balmer lines are stronger
+        @test sum(αs_sy) > sum(αs_hm)
+    end
 end

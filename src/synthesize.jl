@@ -85,6 +85,21 @@ result = synthesize(atm, linelist, A_X, (5000, 5100))
     probability formalism for hydrogen lines. (MHD is always used for hydrogen bound-free absorption.)
     This is false by default when your last wavelength is > 13,000 Å, true otherwise (discussed in
     [Wheeler+ 2024](https://ui.adsabs.harvard.edu/abs/2023arXiv231019823W/abstract)).
+  - `MHD_method` (default: `:hummer_mihalas`): which occupation-probability ("MHD") formalism to use
+    for hydrogen level dissolution, both in the bound-free continuum and (when
+    `use_MHD_for_hydrogen_lines` is true) in the hydrogen lines.  Options:
+
+      + `:hummer_mihalas` — Hummer & Mihalas 1988 eq. 4.71, Korg's usual treatment.  Its
+        neutral-perturber term dominates at cool-star densities.
+      + `:synthe` — the Holtsmark-microfield treatment used by ATLAS12/SYNTHE, which counts only
+        the ion microfield and has no neutral-perturber term.  **The sign of its effect reverses
+        with Teff:** in FGK atmospheres it dissolves *less* than the default (sharper Balmer break,
+        more flux red of it), while in A-type atmospheres, where hydrogen is ionized and nₑ is
+        high, it dissolves *more* (smeared break, ~30% less flux at 3800 Å). Use this when
+        comparing against SYNTHE, but check the direction at your Teff.
+      + `:none` — no level dissolution (`w = 1` everywhere).
+
+    See [`Korg.mhd_occupation_w`](@ref) for details and caveats.
   - `hydrogen_line_window_size` (default: 150): the maximum distance (in Å) from each hydrogen line
     center at which to calculate its contribution to the total absorption coefficient.
   - `mu_values` (default: 20): the number of μ values at which to calculate the surface flux, or a
@@ -157,6 +172,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                     cntm_step::Real=1.0,
                     hydrogen_lines=true,
                     use_MHD_for_hydrogen_lines::Union{Nothing,Bool}=nothing,
+                    MHD_method::Symbol=:hummer_mihalas,
                     hydrogen_line_window_size=150,
                     mu_values=20,
                     line_cutoff_threshold=3e-4,
@@ -184,6 +200,11 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
 
     if isnothing(use_MHD_for_hydrogen_lines)
         use_MHD_for_hydrogen_lines = wls[end] < 13_000 * 1e-8
+    end
+
+    if !(MHD_method in (:hummer_mihalas, :synthe, :none))
+        throw(ArgumentError("MHD_method must be :hummer_mihalas, :synthe, or :none, " *
+                            "not $MHD_method"))
     end
 
     if coherent_scattering
@@ -253,7 +274,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
     else
         Float64
     end
-    
+
     α_type = promote_type(
         typeof(sample_layer.tau_ref),
         typeof(sample_layer.z),
@@ -352,7 +373,8 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
         local α_cntm_abs_vals, α_cntm_scat_vals
         if coherent_scattering
             α_cntm_abs_vals, α_cntm_scat_vals = continuum_absorption_and_scattering(
-                eachfreq(cntm_wls), layer.temp, nₑ, n_dict, partition_funcs)
+                eachfreq(cntm_wls), layer.temp, nₑ, n_dict, partition_funcs;
+                MHD_method=MHD_method)
             α_cntm_abs_vals = reverse(α_cntm_abs_vals)
             α_cntm_scat_vals = reverse(α_cntm_scat_vals)
             α_cntm_vals = α_cntm_abs_vals .+ α_cntm_scat_vals
@@ -360,7 +382,8 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
             α_cntm_abs_vals = nothing
             α_cntm_scat_vals = nothing
             α_cntm_vals = reverse(total_continuum_absorption(eachfreq(cntm_wls), layer.temp, nₑ,
-                                                             n_dict, partition_funcs))
+                                                             n_dict, partition_funcs;
+                                                             MHD_method=MHD_method))
         end
         α_cntm_layer = linear_interpolation(cntm_wls, α_cntm_vals)
         α[i, :] .= α_cntm_layer(wls)
@@ -371,7 +394,8 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                 α_ref[i] = atm.alpha_ref[i]  # no convert; preserves Dual
             else
                 α_ref[i] = total_continuum_absorption([c_cgs / atm.reference_wavelength],
-                                                      layer.temp, nₑ, n_dict, partition_funcs)[1]
+                                                      layer.temp, nₑ, n_dict, partition_funcs;
+                                                      MHD_method=MHD_method)[1]
             end
         end
 
@@ -458,7 +482,8 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
             ξ = (isa(vmic, Number) ? vmic : vmic[i]) * 1e5
             hydrogen_line_absorption!(view(α, i, :), wls, layer.temp, nₑ, nH_I, nHe_I,
                                       U_H_I, ξ, hydrogen_line_window_size * 1e-8;
-                                      use_MHD=use_MHD_for_hydrogen_lines)
+                                      use_MHD=use_MHD_for_hydrogen_lines,
+                                      MHD_method=MHD_method)
         end
     end
 

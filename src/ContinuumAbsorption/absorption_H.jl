@@ -18,9 +18,19 @@ const _H_I_bf_cross_sections = let
     end
 end
 
+# g_n σ_n at the level's own ionization threshold, in cm², indexed by n (the table above is in n
+# order, and already carries the 2n² degeneracy).  Used by the ATLAS12/SYNTHE merged continuum;
+# see H_I_bf_threshold_cross_section.
+const _H_I_bf_threshold_σs = let
+    χ = ionization_energies[1][1]
+    map(_H_I_bf_cross_sections) do (n, sigmas)
+        sigmas(χ / n^2) * 1e-18 # 1e-18 converts megabarns to cm²
+    end
+end
+
 """
-    H_I_bf(νs, T, nH, nHe, ne, invU_H; n_max_MHD=6, use_hubeny_generalization=false, 
-           taper=false, use_MHD_for_Lyman=false)
+    H_I_bf(νs, T, nH, nHe, ne, invU_H; n_max_MHD=6, MHD_method=:hummer_mihalas,
+           use_hubeny_generalization=false, taper=false, use_MHD_for_Lyman=false)
 
 The bound-free linear absorption coefficient contributed by all energy states of a neutral Hydrogen
 atom. Even though the Mihalas-Hummer-Daeppen (MHD) occupation probability formalism is not used in
@@ -50,11 +60,50 @@ in the visible, we don't use MHD for bf absorption from n=1.  This can be overri
 tapering of the cross-section as [HBOP](https://github.com/barklem/hlinop/blob/master/hbop.f) to fix
 the problem.
 
+The `MHD_method` keyword argument selects which level-dissolution treatment is used:
+`:hummer_mihalas` (the default, Korg's usual treatment), `:synthe`, or `:none`.
+
+`:synthe` reproduces ATLAS12/SYNTHE's `HOP` **in full**, which differs from Korg's default in two
+independent ways — the occupation probability *and* the bookkeeping around it:
+
+ 1. `w_n` comes from [`Korg.synthe_mhd_w`](@ref) (Holtsmark microfield) rather than
+    [`Korg.hummer_mihalas_w`](@ref).
+ 2. Each level keeps a **hard ionization threshold**: there is no bound-free absorption red of the
+    unperturbed series edge, so the Balmer break stays sharp. The dissolved `(1 - w_n)` fraction of
+    levels `n ≥ 7` is instead returned as a smooth Kramers pseudo-continuum at *all* frequencies
+    (`_dissolved_pseudocontinuum_σ`). Korg's default instead smears the edge itself, extrapolating
+    the lower level's cross-section redward times `1 - w_upper/w_lower` (the HBOP/Hubeny approach).
+
+Point 2 shapes the `HOP` term, but it is **not** the whole Balmer break, because `HOP` is not where
+SYNTHE keeps the rest of it:
+
+ 3. A blanket **merged continuum** ([`_add_synthe_merged_continuum!`](@ref)) carries the level's
+    full threshold cross-section from the series limit redward to the Inglis-Teller merging
+    wavelength, then cross-fades into the resolved high-`n` lines, which
+    `hydrogen_line_absorption!` tapers off over the same interval.  SYNTHE supplies this from the
+    `CONTINUUM` pseudo-lines in its line list, i.e. from its line module; Korg books it here,
+    because it is bound-free opacity.
+
+So the hard edge of point 2 is real only *inside* `HOP`.  Leave point 3 out — as an earlier version
+of this option did — and the 3646-3700 Å window comes out ~25x too transparent.
+
+Checked against ATLAS12's `HOP` at 8300–10700 K and `nₑ = 3e13`–`2.4e14` cm⁻³, this reproduces it
+to 0.1–0.2% across 3400–4000 Å.  Two deliberate deviations remain, both negligible there:
+
+  - `HOP` applies no `w_n` at all to levels `n ≤ 6` (they carry NLTE departure coefficients
+    instead); Korg weights them.  The two agree to <0.5% below `nₑ ≈ 1e15` cm⁻³, but diverge in
+    hot, dense atmospheres, where Korg is the more defensible of the two.
+  - Above `n = 6` Korg uses Kramers cross-sections out to n=40, `HOP` uses Karzas-Latter
+    cross-sections out to n=80.
+
+`:none` disables level dissolution entirely (`w = 1`, hard edges, no pseudo-continuum).
+
 The `use_hubeny_generalization` keyword argument enables the generalization of the MHD from
-Hubeny 1994. It is experimental and switched off by default.
+Hubeny 1994. It is experimental and switched off by default.  It only applies when
+`MHD_method=:hummer_mihalas`.
 """
-function H_I_bf(νs, T, nH_I, nHe_I, ne, invU_H; n_max_MHD=6, use_hubeny_generalization=false,
-                taper=false, use_MHD_for_Lyman=false)
+function H_I_bf(νs, T, nH_I, nHe_I, ne, invU_H; n_max_MHD=6, MHD_method=:hummer_mihalas,
+                use_hubeny_generalization=false, taper=false, use_MHD_for_Lyman=false)
     χ = ionization_energies[1][1]
     σ_type = promote_type(eltype(νs), typeof(T), typeof(nH_I), typeof(nHe_I), typeof(ne),
                           typeof(invU_H))
@@ -63,7 +112,7 @@ function H_I_bf(νs, T, nH_I, nHe_I, ne, invU_H; n_max_MHD=6, use_hubeny_general
     cross_section = Vector{σ_type}(undef, length(νs))
     dissolved_fraction = Vector{σ_type}(undef, length(νs))
     for (n, sigmas) in _H_I_bf_cross_sections[1:n_max_MHD]
-        w_lower = hummer_mihalas_w(T, n, nH_I, nHe_I, ne;
+        w_lower = mhd_occupation_w(T, n, nH_I, nHe_I, ne; MHD_method=MHD_method,
                                    use_hubeny_generalization=use_hubeny_generalization)
         #the degeneracy is already factored into the nahar cross-sections
         occupation_prob = w_lower * exp(-χ * (1 - 1 / n^2) / (kboltz_eV * T))
@@ -84,6 +133,12 @@ function H_I_bf(νs, T, nH_I, nHe_I, ne, invU_H; n_max_MHD=6, use_hubeny_general
             # don't use MHD for the Lyman series limit since it leads to inflated cross-sections
             # far red of the limit
             dissolved_fraction[1:break_ind-1] .= 0.0
+        elseif MHD_method === :synthe
+            # ATLAS12's HOP gates every level on a hard wavenumber threshold
+            # (`IF (WAVENO .LT. H_SERIES_LIMITS(n)) EXIT levels`), so a level contributes nothing
+            # red of its unperturbed edge and the break stays sharp.  The dissolved fraction
+            # re-enters as the pseudo-continuum added after this loop, not as a smeared edge.
+            dissolved_fraction[1:break_ind-1] .= 0.0
         else
             dissolved_fraction[1:break_ind-1] .= map(νs[1:break_ind-1]) do ν
                 # account for bf absorption redward of the jump/break because of level dissolution
@@ -91,7 +146,7 @@ function H_I_bf(νs, T, nH_I, nHe_I, ne, invU_H; n_max_MHD=6, use_hubeny_general
                 # photon energy
                 n_eff = 1 / sqrt(1 / n^2 - hplanck_eV * ν / χ)
                 # this could probably be interpolated without much loss of accuracy
-                w_upper = hummer_mihalas_w(T, n_eff, nH_I, nHe_I, ne;
+                w_upper = mhd_occupation_w(T, n_eff, nH_I, nHe_I, ne; MHD_method=MHD_method,
                                            use_hubeny_generalization=use_hubeny_generalization)
                 # w_upper/w[n] is the prob that the upper level is dissolved given that the lower isn't
                 frac = 1 - w_upper / w_lower
@@ -119,13 +174,33 @@ function H_I_bf(νs, T, nH_I, nHe_I, ne, invU_H; n_max_MHD=6, use_hubeny_general
     end
 
     for n in (n_max_MHD+1):40
-        w_lower = hummer_mihalas_w(T, n, nH_I, nHe_I, ne;
+        w_lower = mhd_occupation_w(T, n, nH_I, nHe_I, ne; MHD_method=MHD_method,
                                    use_hubeny_generalization=use_hubeny_generalization)
         if w_lower < 1e-5
             break
         end
         occupation_prob = 2n^2 * w_lower * exp(-χ * (1 - 1 / n^2) / (kboltz_eV * T))
         @. total_cross_section += occupation_prob * simple_hydrogen_bf_cross_section.(n, νs)
+    end
+
+    if MHD_method === :synthe
+        # Pseudo-continuum from dissolved levels, as in ATLAS12's HOP.  The (1 - w_n) fraction of
+        # each level n ≥ 7 no longer sits at a well-defined energy, so it absorbs at *every*
+        # frequency with a Kramers-like cross-section instead of having a threshold.  Above a
+        # level's edge this restores what the w_n weighting above removed (w + (1-w) = 1); below it,
+        # this is the only absorption, and it is smooth rather than edge-shaped.
+        # ATLAS12 runs this loop to NMAX_HLEVELS = 80.
+        for n in 7:_N_MAX_DISSOLVED
+            w_lower = mhd_occupation_w(T, n, nH_I, nHe_I, ne; MHD_method=MHD_method,
+                                       use_hubeny_generalization=use_hubeny_generalization)
+            if 1 - w_lower < 1e-6 # fully bound: nothing dissolved
+                continue
+            end
+            occupation_prob = 2n^2 * (1 - w_lower) * exp(-χ * (1 - 1 / n^2) / (kboltz_eV * T))
+            @. total_cross_section += occupation_prob *
+                                      _dissolved_pseudocontinuum_σ.(n, νs)
+        end
+        _add_synthe_merged_continuum!(total_cross_section, νs, T, ne)
     end
 
     #factor of 10^-18 converts cross-sections from megabarns to cm^2
@@ -171,6 +246,98 @@ function simple_hydrogen_bf_cross_section(n::Integer, ν::Real)
         bf_σ_const = 2.815e29
         bf_σ_const * (inv_n2 * inv_n2 * inv_n) * (inv_ν^3) * 1e18 #convert to megabarns
     end
+end
+
+# ATLAS12's HOP carries dissolved levels up to NMAX_HLEVELS = 80.
+const _N_MAX_DISSOLVED = 80
+
+"""
+    H_I_bf_threshold_cross_section(n)
+
+The degeneracy-weighted H I bound-free cross-section `2n²σ_n`, in cm², of the level with principal
+quantum number `n`, evaluated at that level's own (unperturbed) ionization threshold.  (Like the
+rest of the Nahar table this carries the `2n²` degeneracy already, so callers must not reapply it.)
+
+This is the peak of the level's edge, and it is what ATLAS12/SYNTHE assigns to its hydrogen
+*merged continuum*: in SYNTHE's line list each series limit carries a `CONTINUUM` pseudo-line whose
+`gf` is exactly `2n²σ_n(edge)` — `log gf = -16.858` with `J = 3.5` at the Balmer limit, i.e.
+`8 × 1.387e-17` cm², which this returns as `1.108e-16` cm².  See
+[`_add_synthe_merged_continuum!`](@ref).
+
+Values come from the same Nahar 2021 tables [`H_I_bf`](@ref) uses, so the merged continuum joins
+continuously onto the bound-free edge.
+"""
+H_I_bf_threshold_cross_section(n::Integer) = _H_I_bf_threshold_σs[n]
+
+"""
+    _add_synthe_merged_continuum!(σs, νs, T, ne; n_max=4)
+
+Add ATLAS12/SYNTHE's blanket **merged continuum** for hydrogen series `1:n_max` to the
+cross-section vector `σs` (megabarns, per H I atom over the partition function), in place.
+
+Each series contributes, from its ionization limit redward,
+
+``2n^2σ_n(\\mathrm{edge})\\, e^{-E_n/kT}\\,(1 - \\mathrm{taper}(λ))``
+
+with `2n²σ_n(edge)` from [`H_I_bf_threshold_cross_section`](@ref) and the taper from
+[`Korg.synthe_merged_continuum_taper`](@ref).  `H_I_bf`'s caller-side factors — `nH_I`, `invU_H`,
+and stimulated emission — are applied to `σs` as a whole, so they are deliberately absent here.
+
+This is the opacity SYNTHE's `CONTINUUM` pseudo-lines supply, and the half of its Balmer break that
+`HOP` does *not* contain: with SYNTHE's hard per-level ionization threshold there is no bound-free
+absorption red of the Balmer limit, so without this term the 3646-3700 Å window comes out ~25x too
+transparent.  See [`Korg.synthe_merged_continuum_wavelengths`](@ref) for the cross-over geometry;
+`hydrogen_line_absorption!` applies the complementary taper to the resolved lines, so the total is
+continuous.
+
+SYNTHE books this in its line module.  Korg books it here instead, because it *is* bound-free
+opacity: that keeps `synthesize(...; return_cntm=true)` returning a physical continuum, and makes
+`:synthe` behave like `:hummer_mihalas`, which covers the same window by smearing the bound-free
+edge itself.  The consequence is that a Korg `:synthe` **continuum** no longer matches a
+continuum-only SYNTHE run (which, having no line list, drops the blanket and shows a bare step);
+the two agree on total opacity, which is what matters.
+
+`n_max` defaults to 4, the series Korg has hydrogen line data for (Lyman, Balmer, Paschen,
+Brackett), so every blanket added here has a matching set of tapered lines.  SYNTHE carries
+`CONTINUUM` pseudo-lines out to n = 15; the extra ones sit at 2.3 µm and beyond, where Korg has no
+hydrogen lines to cross-fade with, so they are left out rather than added unpaired.
+"""
+function _add_synthe_merged_continuum!(σs, νs, T, ne; n_max=4)
+    χ = ionization_energies[1][1]
+    for n in 1:n_max
+        λ_limit = n^2 * hplanck_eV * c_cgs / χ # the series limit, in cm
+        λ_con, λ_tail = synthe_merged_continuum_wavelengths(n, ne)
+        # 1e18 converts cm² to the megabarns the rest of H_I_bf works in
+        amplitude = H_I_bf_threshold_cross_section(n) * 1e18 *
+                    exp(-χ * (1 - 1 / n^2) / (kboltz_eV * T))
+        @. σs += amplitude * _merged_continuum_shape(c_cgs / νs, λ_limit, λ_con, λ_tail)
+    end
+end
+
+# 1 between the series limit and λ_con, ramping to 0 at λ_tail, 0 outside.  The complement of the
+# taper hydrogen_line_absorption! applies to the resolved lines over the same interval.
+function _merged_continuum_shape(λ, λ_limit, λ_con, λ_tail)
+    if (λ < λ_limit) || (λ > λ_tail)
+        zero(λ * λ_con)
+    else
+        1 - synthe_merged_continuum_taper(λ, λ_con, λ_tail)
+    end
+end
+
+"""
+    _dissolved_pseudocontinuum_σ(n, ν)
+
+The Kramers bound-free cross-section (in megabarns) for hydrogen level `n`, **without** the
+ionization threshold that [`simple_hydrogen_bf_cross_section`](@ref) applies.
+
+Used for the `MHD_method=:synthe` pseudo-continuum: the dissolved `(1 - w_n)` fraction of a level
+has no well-defined ionization energy, so in ATLAS12's `HOP` it absorbs at all frequencies rather
+than only above the unperturbed edge.  This is per-level (the `2n²` degeneracy is applied by the
+caller), matching HOP's `(1-w_n)·2.815e29/ν³·2/n³`.
+"""
+function _dissolved_pseudocontinuum_σ(n, ν)
+    bf_σ_const = 2.815e29
+    bf_σ_const / (n^5 * ν^3) * 1e18 # 1e18 converts cm² to megabarns
 end
 
 const _Hminus_bf_cross_section_interp, _min_H⁻_interp_ν = let

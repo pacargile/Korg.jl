@@ -285,6 +285,48 @@
         @test Korg.ionization_energies[Korg.atomic_numbers["U"]] == [6.1940, 11.590, 19.800]
     end
 
+    @testset "SYNTHE (Holtsmark) occupation probabilities" begin
+        # holtsmark_Q is the cumulative Holtsmark microfield distribution, so it's monotonic and
+        # clamped to [0, 1] exactly as ATLAS12/SYNTHE's holtsmark_Q is.
+        @test Korg.holtsmark_Q(0.005) == 0.0
+        @test Korg.holtsmark_Q(0.01) == 0.0
+        @test Korg.holtsmark_Q(50.0) == 1.0
+        @test Korg.holtsmark_Q(1e6) == 1.0
+        βs = 10 .^ (-2:0.05:1.7)
+        @test issorted(Korg.holtsmark_Q.(βs))
+        # compare against the asymptotic Holtsmark tail, 1 - Q(β) → (2/3)·1.496·β^(-3/2)
+        for β in [20.0, 30.0, 45.0]
+            @test 1 - Korg.holtsmark_Q(β)≈(2 / 3) * 1.496 * β^-1.5 rtol=0.05
+        end
+        # spot-check the table against a direct numerical integration of the Holtsmark distribution
+        # (computed offline; the log-β grid is coarse, hence the loose tolerances)
+        @test Korg.holtsmark_Q(1.0)≈0.10859 rtol=0.03
+        @test Korg.holtsmark_Q(5.0)≈0.88752 rtol=0.01
+        @test Korg.holtsmark_Q(10.0)≈0.96574 rtol=0.01
+
+        # w = Q(β_crit) with β_crit ∝ n⁻⁵ nₑ^(-2/3), so w decreases with both n and nₑ
+        @test Korg.synthe_mhd_w(1, 1e13) == 1.0     # SYNTHE never dissolves the ground state
+        @test Korg.synthe_mhd_w(30, 0.0) == 1.0     # no electrons, no dissolution
+        @test Korg.synthe_mhd_w(2, 1e13) ≈ 1.0
+        @test issorted([Korg.synthe_mhd_w(n, 1e13) for n in 2:40]; rev=true)
+        @test Korg.synthe_mhd_w(15, 1e14) < Korg.synthe_mhd_w(15, 1e13)
+        # unlike hummer_mihalas_w, it doesn't depend on T or on the neutral densities, and it
+        # dissolves high-n levels far less aggressively at cool-star densities
+        @test Korg.synthe_mhd_w(15, 1e13) > 10 * Korg.hummer_mihalas_w(5800.0, 15, 1e17, 1e16, 1e13)
+
+        # the dispatcher
+        T, nH, nHe, ne = 5800.0, 1e17, 1e16, 1e13
+        @test Korg.mhd_occupation_w(T, 12, nH, nHe, ne) ==
+              Korg.hummer_mihalas_w(T, 12, nH, nHe, ne)
+        @test Korg.mhd_occupation_w(T, 12, nH, nHe, ne; MHD_method=:synthe) ==
+              Korg.synthe_mhd_w(12, ne)
+        @test Korg.mhd_occupation_w(T, 12, nH, nHe, ne; MHD_method=:none) == 1.0
+        @test_throws ArgumentError Korg.mhd_occupation_w(T, 12, nH, nHe, ne; MHD_method=:nope)
+
+        # autodiffable in nₑ
+        @test ForwardDiff.derivative(ne -> Korg.synthe_mhd_w(15, ne), 1e13) < 0
+    end
+
     @testset "O I-III and CN partition functions are (nearly) monotonic in T" begin
         lnTs = 0:0.1:log(100_000.0)
         nearly_monotonic(Us) = all(diff(Us) .> -1e-4)

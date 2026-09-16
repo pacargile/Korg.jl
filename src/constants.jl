@@ -17,3 +17,9 @@ const kboltz_eV = 8.617333262145e-5 #eV/K
 const hplanck_eV = 4.135667696e-15 #eV*s
 const RydbergH_eV = 13.598287264 #eV
 const Rydberg_eV = 13.605693122994 #eV 2018 CODATA via wikipedia
+
+# Coefficient in the critical-field parameter used by the ATLAS12/SYNTHE occupation-probability
+# formalism (see `synthe_mhd_w`): β_crit = HOLTSMARK_BETA_COEFF / (n^5 * nₑ^(2/3)), i.e. the field at
+# which level n dissolves, in units of the Holtsmark normal field F₀ = 1.25e-9 nₑ^(2/3).
+# Copied verbatim from ATLAS12's BETA_COEFF_HM88 so that Korg reproduces SYNTHE exactly.
+const HOLTSMARK_BETA_COEFF = 8.798905203085208e14

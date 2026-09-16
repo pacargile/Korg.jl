@@ -529,6 +529,176 @@ end
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 """
+    Q_HOLTSMARK
+
+The cumulative Holtsmark microfield distribution, ``Q(\\beta) = P(F < \\beta F_0)``, where ``F_0``
+is the Holtsmark normal field strength, tabulated on 150 points uniform in ``\\log_{10}\\beta`` from
+0.01 to 50.  Used by [`synthe_mhd_w`](@ref).
+
+This table is copied verbatim from the ATLAS12/SYNTHE `Q_HOLTSMARK` array so that Korg's
+`MHD_method=:synthe` occupation probabilities are numerically identical to SYNTHE's.
+"""
+const Q_HOLTSMARK = [
+     1.414671303101461e-07, 1.679306576215498e-07, 1.993444994252022e-07, 2.366346434794731e-07,
+     2.809002805410456e-07, 3.334461984807552e-07, 3.958212340900693e-07, 4.698639150426803e-07,
+     5.577566360795190e-07, 6.620899645927724e-07, 7.859389687582573e-07, 9.329538149374408e-07,
+     1.107467300593689e-06, 1.314622486716282e-06, 1.560524184270007e-06, 1.852418749731333e-06,
+     2.198907475766682e-06, 2.610199848759794e-06, 3.098414113872032e-06, 3.677933974566057e-06,
+     4.365831897218437e-06, 5.182371440131865e-06, 6.151603336163127e-06, 7.302072795786128e-06,
+     8.667658741262937e-06, 1.028856952546623e-05, 1.221252424026525e-05, 1.449615410836965e-05,
+     1.720666483126171e-05, 2.042380831343906e-05, 2.424222111026057e-05, 2.877419750061379e-05,
+     3.415297755655442e-05, 4.053664530978627e-05, 4.811274949652059e-05, 5.710377986116004e-05,
+     6.777365615449882e-05, 8.043541539930427e-05, 9.546031643883215e-05, 1.132886200658068e-04,
+     1.344423491071419e-04, 1.595403868046069e-04, 1.893163349213092e-04, 2.246396266107989e-04,
+     2.665404747620448e-04, 3.162393359894821e-04, 3.751816855286531e-04, 4.450790309992992e-04,
+     5.279572453545271e-04, 6.262134733849464e-04, 7.426830638017916e-04, 8.807182017925553e-04,
+     1.044280166083684e-03, 1.238047410111971e-03, 1.467541967671182e-03, 1.739277006102283e-03,
+     2.060928688577077e-03, 2.441535851096500e-03, 2.891731333794821e-03, 3.424009106941961e-03,
+     4.053031566870220e-03, 4.795981500493777e-03, 5.672963167595142e-03, 6.707456645870922e-03,
+     7.926828918285955e-03, 9.362904019250405e-03, 1.105259272456321e-02, 1.303857956034104e-02,
+     1.537006106786488e-02, 1.810352400480589e-02, 2.130354516765621e-02, 2.504358545069891e-02,
+     2.940673929734126e-02, 3.448638660516894e-02, 4.038667732307838e-02, 4.722275959985061e-02,
+     5.512064100258095e-02, 6.421655023415057e-02, 7.465564600958080e-02, 8.658990347532045e-02,
+     1.001750012765402e-01, 1.155660400501043e-01, 1.329119530555128e-01, 1.523485300474136e-01,
+     1.739900743830450e-01, 1.979198568471881e-01, 2.241797192777529e-01, 2.527594102861463e-01,
+     2.835864859104609e-01, 3.165178467055500e-01, 3.513341604156768e-01, 3.877384740815520e-01,
+     4.253601858765986e-01, 4.637651729352414e-01, 5.024722401913855e-01, 5.409752086892451e-01,
+     5.787690154213567e-01, 6.153773349921458e-01, 6.503786770405923e-01, 6.834278586173648e-01,
+     7.142702953716408e-01, 7.427476403869326e-01, 7.687946986070335e-01, 7.924289205182540e-01,
+     8.137347922132799e-01, 8.328458692792989e-01, 8.499270198328847e-01, 8.651588016097912e-01,
+     8.787250560031417e-01, 8.908040093261350e-01, 9.015625910920573e-01, 9.111533622086631e-01,
+     9.197133565854327e-01, 9.273641961484557e-01, 9.342129682962188e-01, 9.403534976718694e-01,
+     9.458677646981941e-01, 9.508273225009358e-01, 9.552946289851881e-01, 9.593242514728686e-01,
+     9.629639386838167e-01, 9.662555465715050e-01, 9.692358425479507e-01, 9.719372021216177e-01,
+     9.743882111568676e-01, 9.766141278943968e-01, 9.786373698849190e-01, 9.804778420731699e-01,
+     9.821532811516551e-01, 9.836795130160503e-01, 9.850706740272015e-01, 9.863394492399232e-01,
+     9.874972091274948e-01, 9.885541671623754e-01, 9.895195463975206e-01, 9.904015671946884e-01,
+     9.912077851485863e-01, 9.919449707318418e-01, 9.926192297837247e-01, 9.932361028219120e-01,
+     9.938006248722731e-01, 9.943173688128598e-01, 9.947904964619882e-01, 9.952237635494758e-01,
+     9.956206036156809e-01, 9.959840685797559e-01, 9.963172215001466e-01, 9.966224531295311e-01,
+     9.969021568157113e-01, 9.971585495409699e-01]
+const _log_beta_min_holtsmark = -2.0
+const _log_beta_max_holtsmark = log10(50.0)
+const _log_beta_step_holtsmark = (_log_beta_max_holtsmark - _log_beta_min_holtsmark) /
+                                 (length(Q_HOLTSMARK) - 1)
+
+"""
+    holtsmark_Q(β)
+
+The probability that the plasma microfield strength ``F`` is less than ``\\beta F_0``, where ``F_0``
+is the Holtsmark normal field strength (``F_0 = 1.25\\times10^{-9} n_e^{2/3}`` in cgs).
+
+Linearly interpolated from [`Q_HOLTSMARK`](@ref) in ``\\log_{10}\\beta``, and clamped to 0 below
+``\\beta = 0.01`` and to 1 above ``\\beta = 50``, exactly as ATLAS12/SYNTHE's `holtsmark_Q` does.
+(The tabulated value at ``\\beta = 50`` is 0.9972; SYNTHE rounds the remaining 0.3% up to unity so
+that unperturbed low-``n`` levels get exactly ``w = 1``.)
+
+Reference: Holtsmark, J. 1919, Ann. Phys. 363, 577.
+"""
+function holtsmark_Q(β)
+    if β <= 0.01
+        return zero(β)
+    elseif β >= 50.0
+        return one(β)
+    end
+
+    log_β = log10(β)
+    # index (0-based) of the grid cell containing log_β
+    idx_f = (log_β - _log_beta_min_holtsmark) / _log_beta_step_holtsmark
+    idx = clamp(floor(Int, ForwardDiff.value(idx_f)), 0, length(Q_HOLTSMARK) - 2)
+    frac = idx_f - idx
+    Q_HOLTSMARK[idx+1] + frac * (Q_HOLTSMARK[idx+2] - Q_HOLTSMARK[idx+1])
+end
+
+"""
+    synthe_mhd_w(n_eff, ne)
+
+Calculate the correction, w, to the occupation fraction of a hydrogen energy level using the
+occupation probability formalism as implemented in ATLAS12/SYNTHE (`occupation_prob`).
+
+Where [`hummer_mihalas_w`](@ref) evaluates the H&M 1988 eq. 4.71 exponential (a nearest-neighbour /
+excluded-volume estimate summing a *neutral* perturber term and a charged perturber term), SYNTHE
+instead reads the level's survival probability straight off the Holtsmark microfield distribution,
+
+``w_n = Q(\\beta_\\mathrm{crit})``, with ``\\beta_\\mathrm{crit} = C / (n^5 n_e^{2/3})``,
+
+where ``C = 8.798905203085208\\times10^{14}`` and ``Q`` is [`holtsmark_Q`](@ref).
+``\\beta_\\mathrm{crit}`` is the critical field (at which the level is Stark-dissolved), in units of
+the Holtsmark normal field ``F_0 = 1.25\\times10^{-9} n_e^{2/3}``, so ``w_n`` is just the fraction
+of atoms sitting in a field weaker than critical.
+
+Two consequences are worth knowing before you switch formalisms:
+
+ 1. **There is no neutral-perturber term and no temperature dependence.** SYNTHE counts only the
+    ion microfield, while `hummer_mihalas_w` adds a neutral term ``\\propto n_\\mathrm{H\\,I}``.
+    **Which formalism dissolves harder therefore depends on** ``n_\\mathrm{H\\,I}/n_e``, **and the
+    sign of the difference reverses across the HRD:**
+
+      + *Cool stars* (solar photosphere: ``n_\\mathrm{H\\,I} \\sim 10^{17}``, ``n_e \\sim 10^{13}``
+        cm``^{-3}``, ratio ``\\sim 10^4``) — the neutral term dominates H&M, so Korg dissolves far
+        more than SYNTHE (``w_{15} \\approx 0.04`` vs ``\\approx 0.6``).  `:synthe` gives *less*
+        bound-free absorption red of the Balmer break, i.e. a sharper break and more flux there.
+      + *Hot stars* (A-type, ``T_\\mathrm{eff} \\gtrsim 8000`` K) — hydrogen ionizes, the neutral
+        term collapses, and the comparison becomes charged-term-vs-Holtsmark, where SYNTHE is much
+        more aggressive.  At ``T_\\mathrm{eff} = 8500`` K, ``\\tau = 1``
+        (``n_\\mathrm{H\\,I} = 2.3\\times10^{15}``, ``n_e = 4.8\\times10^{14}``):
+        ``w_{12} = 0.61`` for H&M vs ``0.025`` here.  `:synthe` then gives ~4-5x *more* absorption
+        red of the break, i.e. a more smeared break and ~30% less flux at 3800 Å.
+
+    This is not just a difference of coefficients: H&M is ``\\exp(-C n^6)``, an exponentially sharp
+    cutoff, whereas the Holtsmark CDF approaches 1 only as a power law
+    (``1 - Q \\approx 0.997\\,\\beta^{-3/2}``), so SYNTHE always leaves a fatter dissolved tail at
+    moderate ``n`` once ``n_e`` is high.
+ 2. The exponent of `n` is 5, not the 4 of the classical field-ionization threshold.  This is what
+    SYNTHE does, and it is reproduced here deliberately: the point of this option is code-to-code
+    agreement with SYNTHE, not a re-derivation of the microfield theory.
+
+`ne` is the electron number density in cm``^{-3}`` and `n_eff` is the effective principal quantum
+number (which need not be an integer; `H_I_bf` passes fractional values when computing the
+dissolved fraction).  As in SYNTHE, `w = 1` is returned for `n_eff <= 1`.
+
+References:
+
+  - Hummer, D.G. & Mihalas, D. 1988, ApJ 331, 794
+  - Nayfonov, A., Däppen, W., Hummer, D.G. & Mihalas, D. 1999, ApJ 526, 451
+"""
+function synthe_mhd_w(n_eff, ne)
+    if (n_eff <= 1) || (ne <= 0)
+        return one(promote_type(typeof(n_eff), typeof(ne)))
+    end
+    β_crit = HOLTSMARK_BETA_COEFF / (n_eff^5 * ne^(2 / 3))
+    holtsmark_Q(β_crit)
+end
+
+"""
+    mhd_occupation_w(T, n_eff, nH, nHe, ne; MHD_method=:hummer_mihalas,
+                     use_hubeny_generalization=false)
+
+Dispatch to whichever occupation-probability ("MHD") formalism `MHD_method` selects, returning the
+correction `w` to the occupation fraction of the hydrogen level with effective principal quantum
+number `n_eff`.
+
+  - `:hummer_mihalas` (default): [`hummer_mihalas_w`](@ref), Korg's usual Hummer & Mihalas 1988
+    eq. 4.71 treatment.
+  - `:synthe`: [`synthe_mhd_w`](@ref), the Holtsmark-microfield treatment used by ATLAS12/SYNTHE.
+    `T`, `nH`, `nHe`, and `use_hubeny_generalization` are unused in this case.
+  - `:none`: no level dissolution, i.e. `w = 1` always.
+"""
+function mhd_occupation_w(T, n_eff, nH, nHe, ne; MHD_method=:hummer_mihalas,
+                          use_hubeny_generalization=false)
+    if MHD_method === :hummer_mihalas
+        hummer_mihalas_w(T, n_eff, nH, nHe, ne; use_hubeny_generalization=use_hubeny_generalization)
+    elseif MHD_method === :synthe
+        synthe_mhd_w(n_eff, ne)
+    elseif MHD_method === :none
+        one(promote_type(typeof(T), typeof(n_eff), typeof(nH), typeof(nHe), typeof(ne)))
+    else
+        throw(ArgumentError("Unknown MHD_method: $MHD_method. " *
+                            "Must be :hummer_mihalas, :synthe, or :none."))
+    end
+end
+
+"""
     hummer_mihalas_U_H(T, nH, nHe, ne)
 
 !!!note

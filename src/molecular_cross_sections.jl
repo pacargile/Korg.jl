@@ -55,6 +55,26 @@ function MolecularCrossSection(linelist, wl_params; cutoff_alpha=1e-32,
     end
     species = all_specs[1]
 
+    # This table is indexed by (vmic, T, λ) only -- it has no perturber-density axis -- so it can
+    # represent a line profile only while that profile is density-independent.  Refuse loudly if it
+    # is not.  See `_density_dependent_broadening`.
+    if _density_dependent_broadening(linelist)
+        throw(ArgumentError("""
+              Can't precompute a cross-section for $(species): its lines are pressure-broadened, and \
+              the van der Waals width depends on the H I, H2, and He I number densities.  This table \
+              is indexed by (vmic, T, λ) only, so it has no axis to carry that dependence.
+
+              (Korg's upstream behaviour was to give molecular lines no pressure broadening, which \
+              made the profile density-independent and this table valid.  This fork broadens \
+              molecules too -- see `molecular_broadening.jl` and the vdW term in \
+              `line_absorption!` -- so the assumption no longer holds.  Without this check the \
+              precomputation silently returns an all-zero cross-section, because the sentinel \
+              perturber densities used below propagate NaN into each line's window.)
+
+              Synthesize $(species) directly instead: pass its lines in `linelist` and leave them \
+              out of `molecular_cross_sections`."""))
+    end
+
     α = zeros(length(vmic_vals), length(log_temp_vals), length(wls))
 
     # set both the continuum absorption coef (cntm) and the cutoff absorption coef to
@@ -80,6 +100,33 @@ function MolecularCrossSection(linelist, wl_params; cutoff_alpha=1e-32,
     itp = extrapolate(interpolate!((vmic_vals, log_temp_vals, wls), α .* cutoff_alpha,
                                    (Gridded(Linear()), Gridded(Linear()), Gridded(Linear()))), 0.0)
     MolecularCrossSection(wls, itp, species)
+end
+
+"""
+    _density_dependent_broadening(linelist)
+
+Whether `line_absorption!` would give these lines a broadening width that depends on the perturber
+(H I, H₂, He I) number densities — which [`MolecularCrossSection`](@ref) cannot tabulate.
+
+Determined empirically, by running one line through `line_absorption!` with the same sentinel
+densities the precomputation uses and checking whether any opacity survives: a density-dependent
+width turns into `NaN`, which propagates into the line's wavelength window and makes the loop write
+nothing.  Probing rather than pattern-matching on `vdW` keeps this correct if the broadening
+treatment changes again (including reverting to the upstream one, after which it returns `false`
+and `MolecularCrossSection` works as before).
+"""
+function _density_dependent_broadening(linelist)
+    isempty(linelist) && return false
+    line = first(linelist)
+    λ0_Å = line.wl * 1e8
+    probe_wls = Wavelengths([(λ0_Å - 0.02):0.005:(λ0_Å + 0.02)])
+    # a huge number density, mirroring the 1/cutoff_alpha trick below, so the line clears the cutoff
+    n_dict = Dict(line.species => 1e30, species"H I" => NaN, species"H2" => NaN,
+                  species"He I" => NaN)
+    α = zeros(1, length(probe_wls))
+    line_absorption!(α, [line], probe_wls, [3000.0], [0.0], n_dict, default_partition_funcs,
+                     1e5, fill(λ -> 1.0, 1); cutoff_threshold=1.0)
+    all(iszero, α)
 end
 
 function Base.show(io::IO, sigma::MolecularCrossSection)

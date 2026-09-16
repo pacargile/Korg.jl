@@ -2,7 +2,8 @@
     prune_linelist(atm, linelist, A_X, wls...; threshold=1.0, sort=true, synthesis_kwargs...)
 
 Return the vector containing the strongest lines in `linelist`, (optionally) sorted by approximate
-equivalent width.
+equivalent width.  With `return_alphas=true`, return `(lines, alphas)` instead, where `alphas` is
+each returned line's line-centre absorption coefficient at the photosphere (in the same order).
 
 # Arguments
 
@@ -21,6 +22,8 @@ equivalent width.
   - `sort_by_EW=true`: If `true`, the returned linelist will be sorted by approximate reduced equivalent
     width. If `false`, the linelist will be in wavelength order. Leaving the list in wavelength
     order is much faster, but sorting by strength is useful for visualizing the strongest lines.
+  - `return_alphas=false`: If `true`, also return each line's line-centre absorption coefficient at
+    the photosphere — the quantity compared against `threshold` — as a second value.
   - `verbose=true`: If `true`, a progress bar will be displayed while measuring the EWs.
     All other kwargs are passed to internal calls to [`synthesize`](@ref).
   - `max_distance=0.0`: how far from `wls` lines can be (in Å) before they are excluded from the
@@ -38,7 +41,7 @@ See also [`merge_close_lines`](@ref) if you are using this for plotting.
 """
 function prune_linelist(atm, linelist, A_X, wl_params;
                         threshold=0.1, sort_by_EW=true, verbose=true, max_distance=0.0,
-                        synthesis_kwargs...)
+                        return_alphas=false, synthesis_kwargs...)
     wls = Wavelengths(wl_params)
     # linelist will be sorted after call to synthesize
     sol = synthesize(atm, linelist, A_X, wls; synthesis_kwargs...)
@@ -67,7 +70,7 @@ function prune_linelist(atm, linelist, A_X, wl_params;
 
     λ_ind = 1
     strong_lines = eltype(linelist)[]
-    alpha_lines  = []
+    alpha_lines = eltype(cntm_sol.alpha)[]
     for line in linelist
         if !any((λstart - max_distance * 1e-8) <= line.wl <= (λstop + max_distance * 1e-8)
                 for (λstart, λstop) in eachwindow(wls))
@@ -108,9 +111,10 @@ function prune_linelist(atm, linelist, A_X, wl_params;
                              synthesis_kwargs...)
             sum(1 .- sol.flux ./ sol.cntm) / line_center # units don't matter
         end
-        strong_lines[sortperm(approx_EWs; rev=true)], alpha_lines[sortperm(approx_EWs; rev=true)]
+        perm = sortperm(approx_EWs; rev=true)
+        return_alphas ? (strong_lines[perm], alpha_lines[perm]) : strong_lines[perm]
     else
-        strong_lines, alpha_lines
+        return_alphas ? (strong_lines, alpha_lines) : strong_lines
     end
 end
 

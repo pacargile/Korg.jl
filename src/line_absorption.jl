@@ -29,11 +29,25 @@ wavelengths `λs`.
   - `cuttoff_threshold` (default: 3e-4): see `α_cntm`
   - `tasks_per_thread` (default: 1): the number of tasks to run per Julia thread. This function
     is multithreaded over the lines in `linelist`.
+  - `nlte_tags`, `b_lower`, `b_upper`, `dev`: NLTE departure coefficients, all `nothing` (the
+    default) for a pure-LTE calculation.  `nlte_tags` is a vector parallel to `linelist` giving
+    each line's transition index (0 for an LTE line, see [`Korg.nlte_tags`](@ref)); `b_lower` and
+    `b_upper` are (transitions × layers) matrices of b_l and b_u; `dev` is a matrix shaped like `α`
+    which is filled in-place with `Σᵢ κᵢ(rᵢ − 1)`, the deviation of the line emissivity from LTE.
+    Passing `dev` is what turns NLTE on, and all four must be given together.  See `nlte.jl`.
 """
 function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densities, partition_fns, ξ,
-                          α_cntm; cutoff_threshold=3e-4, tasks_per_thread=1)
+                          α_cntm; cutoff_threshold=3e-4, tasks_per_thread=1,
+                          nlte_tags=nothing, b_lower=nothing, b_upper=nothing, dev=nothing)
     if length(linelist) == 0
         return zeros(length(λs))
+    end
+
+    # NLTE is on only when a deviation accumulator was handed in.  When it is off, the line loop
+    # pays one integer compare per line and nothing else; see `nlte.jl` for the physics.
+    do_nlte = !isnothing(dev)
+    if do_nlte && (isnothing(nlte_tags) || isnothing(b_lower) || isnothing(b_upper))
+        throw(ArgumentError("`dev` was passed without `nlte_tags`/`b_lower`/`b_upper`"))
     end
 
     β = @. 1 / (kboltz_eV * temps)
@@ -67,12 +81,18 @@ function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densiti
 
     n_chunks = tasks_per_thread * Threads.nthreads()
     chunk_size = max(1, length(linelist) ÷ n_chunks + (length(linelist) % n_chunks > 0))
-    linelist_chunks = partition(linelist, chunk_size)
-    tasks = map(linelist_chunks) do linelist_chunk
+    # chunk over INDICES, not lines, so that each line can find its own NLTE tag
+    linelist_chunks = partition(eachindex(linelist), chunk_size)
+    tasks = map(linelist_chunks) do index_chunk
         # Each chunk of your data gets its own spawned task that does its own local, sequential work
         # and then returns the result
         Threads.@spawn begin
             α_task = zeros(eltype(α), size(α))
+            # the companion to α_task holding Σᵢ κᵢ(rᵢ − 1), rᵢ = Sᵢ/B_ν.  Only lines with
+            # departure coefficients ever write to it, so it stays identically zero away from them.
+            # Allocated only when NLTE is on: it is the same size as α_task, and there is no reason
+            # to pay that in production.
+            dev_task = do_nlte ? zeros(eltype(dev), size(dev)) : nothing
 
             # preallocate some arrays for the core loop.
             # Each element of the arrays corresponds to an atmospheric layer, same at the "temps" array and
@@ -82,10 +102,13 @@ function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densiti
             σ = Vector{eltype(α)}(undef, size(temps))
             amplitude = Vector{eltype(α)}(undef, size(temps))
             levels_factor = Vector{eltype(α)}(undef, size(temps))
+            fkappa = do_nlte ? Vector{eltype(α)}(undef, size(temps)) : nothing
+            fdev = do_nlte ? Vector{eltype(α)}(undef, size(temps)) : nothing
             ρ_crit = Vector{eltype(α)}(undef, size(temps))
             inverse_densities = Vector{eltype(α)}(undef, size(temps))
 
-            for line in linelist_chunk
+            for line_index in index_chunk
+                line = linelist[line_index]
                 m = get_mass(line.species)
 
                 # doppler-broadening width, σ (NOT √[2]σ)
@@ -113,7 +136,20 @@ function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densiti
                 @. γ = Γ * line.wl^2 / (c_cgs * 4π)
 
                 E_upper = line.E_lower + c_cgs * hplanck_eV / line.wl
-                @. levels_factor = exp(-β * line.E_lower) - exp(-β * E_upper)
+
+                # Departure coefficients, if this line has them.  The LTE `levels_factor` is
+                # exp(−βE_l) − exp(−βE_u); the NLTE opacity is the same expression with each term
+                # weighted by its level's b, which is κ_LTE·b_l[1 − (b_u/b_l)e^−x]/[1 − e^−x]
+                # exactly.  Applied BEFORE the cutoff test below, so a line weakened out of
+                # relevance by NLTE is dropped on its true strength.
+                k_nlte = do_nlte ? nlte_tags[line_index] : 0
+                if k_nlte > 0
+                    nlte_line_factors!(fkappa, fdev, view(b_lower, k_nlte, :),
+                                       view(b_upper, k_nlte, :), β, line.E_lower, E_upper)
+                    @. levels_factor = (exp(-β * line.E_lower) - exp(-β * E_upper)) * fkappa
+                else
+                    @. levels_factor = exp(-β * line.E_lower) - exp(-β * E_upper)
+                end
 
                 #total wl-integrated absorption coefficient
                 @. amplitude = 10.0^line.log_gf * sigma_line(line.wl) * levels_factor *
@@ -133,12 +169,23 @@ function line_absorption!(α, linelist, λs::Wavelengths, temps, nₑ, n_densiti
                 end
 
                 α_task[:, lb:ub] .+= line_profile.(line.wl, σ, γ, amplitude, view(λs, lb:ub)')
+                if k_nlte > 0
+                    # `fdev` is per unit of the already-scaled opacity, so the deviation is the
+                    # same profile with the amplitude scaled — one extra broadcast, for a handful
+                    # of lines out of millions.
+                    dev_task[:, lb:ub] .+= line_profile.(line.wl, σ, γ, amplitude .* fdev,
+                                                         view(λs, lb:ub)')
+                end
             end
-            return α_task
+            return α_task, dev_task
         end
     end
 
-    α .+= sum(fetch.(tasks))
+    results = fetch.(tasks)
+    α .+= sum(first.(results))
+    if do_nlte
+        dev .+= sum(last.(results))
+    end
     return nothing
 end
 

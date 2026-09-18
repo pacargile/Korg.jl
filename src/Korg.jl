@@ -12,6 +12,7 @@ include("wavelengths.jl")              # Wavelengths type
 include("species.jl")                  # types for chemical formulae and species
 include("read_statmech_quantities.jl") # approximate Us, Ks, chis
 include("linelist.jl")                 # parse linelists, define Line type
+include("nlte.jl")                     # NLTE departure coefficients for selected lines
 include("molecular_broadening.jl")     # per-species molecular van der Waals widths
 include("line_absorption.jl")          # opacity, line profile, voigt function
 include("hydrogen_line_absorption.jl") # hydrogen lines get special treatment
@@ -34,7 +35,8 @@ include("qfactors.jl")                 # formalism to compute theoretical RV pre
                read_model_atmosphere, MolecularCrossSection, save_molecular_cross_section,
                read_molecular_cross_section, SynthesisResult, Species, Fit, apply_LSF,
                apply_macroturbulence, compute_LSF_matrix, air_to_vacuum, vacuum_to_air, blackbody,
-               prune_linelist, merge_close_lines
+               prune_linelist, merge_close_lines, NLTE, NLTETransition, nlte_departures,
+               nlte_tags, read_nlte_grid
 
 export synthesize, synth, interpolate_marcs, format_A_X
 end # module

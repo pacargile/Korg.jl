@@ -16,6 +16,10 @@ The result of a synthesis. Returned by [`synthesize`](@ref).
     atmosphere, depending on the radiative transfer scheme.
   - `alpha`: the linear absorption coefficient at each wavelength and atmospheric layer, a Matrix of
     size (layers × wavelengths)
+  - `nlte_emissivity_deviation`: `nothing` unless the synthesis used departure coefficients, in
+    which case it is `Σᵢ κᵢ(rᵢ − 1)` (same shape as `alpha`), the quantity by which the line source
+    function departed from `B_ν`.  The source function actually used was
+    `B_ν·(1 + nlte_emissivity_deviation/alpha)`.
   - `mu_grid`: a vector of tuples containing the μ values and weights used in the radiative transfer
     calculation. Can be controlled with the `mu_values` keyword argument.
   - `number_densities`: A dictionary mapping `Species` to vectors of number densities at each
@@ -33,6 +37,7 @@ The result of a synthesis. Returned by [`synthesize`](@ref).
     cntm::Union{Vector,Nothing}
     intensity::Array # can be either matrix or 3-tensor
     alpha::Matrix
+    nlte_emissivity_deviation::Union{Matrix,Nothing} = nothing
     mu_grid::Vector{Tuple}
     number_densities::Dict{Species,Vector}
     electron_number_density::Vector
@@ -164,6 +169,25 @@ result = synthesize(atm, linelist, A_X, (5000, 5100))
     solved on the continuum grid and its mean intensity `J` interpolated onto the synthesis grid; line
     opacity dilutes the albedo (so scattering vanishes in line cores).  Currently supported only for
     planar atmospheres with the "anchored" τ scheme.
+  - `nlte` (default: `nothing`): departure coefficients for selected lines, which make those lines'
+    opacity and source function non-LTE.  Either a [`Korg.NLTE`](@ref) (built with
+    [`Korg.nlte_departures`](@ref), or from coefficients you supply yourself), or a `NamedTuple` of
+    keyword arguments for `nlte_departures` — at minimum `(; Teff, logg)`, since those are grid
+    axes that cannot be recovered from the atmosphere.  `nothing` is plain LTE.
+
+    Tagged lines get opacity `κ_LTE·b_l[1 − (b_u/b_l)e^−x]/[1 − e^−x]` and source function
+    `(2hν³/c²)/[(b_l/b_u)e^x − 1]`, both exact rather than Wien-limit.  Their product is
+    `b_u·κ_LTE·B_ν`, so the emergent source function is `B_ν(α + Σᵢκᵢ(rᵢ−1))/α` with the sum running
+    only over the tagged lines — every LTE line and the continuum drop out of it identically.  See
+    `src/nlte.jl`.
+
+    Building the coefficients costs about a millisecond, so passing the `NamedTuple` form inside a
+    likelihood is fine; but if the atmosphere and abundances are fixed across calls, build the
+    `Korg.NLTE` once with [`Korg.nlte_departures`](@ref) and pass that instead.
+  - `nlte_grid_dir` (default: `nothing`): where the `.nlte` runtime grid files live, overriding
+    `\$KORG_NLTE_DIR`.  Only meaningful with the `NamedTuple` form of `nlte` (an already-built
+    `Korg.NLTE` has nothing left to read).  Per-element `\$NLTE_GRID_*` variables still win over
+    both.
 """
 function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                     wavelength_params...;
@@ -190,6 +214,8 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                     use_chemical_equilibrium_from=nothing,
                     fix_electron_density_to_atmosphere=false,
                     coherent_scattering=false,
+                    nlte=nothing,
+                    nlte_grid_dir=nothing,
                     )::SynthesisResult
     wls = if length(wavelength_params) > 1
         @warn "Passing multiple wavelength parameters to `synthesize` is deprecated.  Package them in a tuple instead: synthesize(atm, linelist, A_X, (λ_start, λ_stop))"
@@ -205,6 +231,16 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
     if !(MHD_method in (:hummer_mihalas, :synthe, :none))
         throw(ArgumentError("MHD_method must be :hummer_mihalas, :synthe, or :none, " *
                             "not $MHD_method"))
+    end
+
+    if !(isnothing(nlte) || nlte isa NamedTuple || nlte isa NLTE)
+        throw(ArgumentError("`nlte` must be a Korg.NLTE, a NamedTuple of nlte_departures " *
+                            "keyword arguments, or nothing; got $(typeof(nlte))"))
+    end
+    if !isnothing(nlte_grid_dir) && nlte isa NLTE
+        throw(ArgumentError("`nlte_grid_dir` says where to READ departure coefficients from, but " *
+                            "`nlte` is an already-built Korg.NLTE, so nothing will be read.  Pass " *
+                            "`nlte_grid_dir` to `nlte_departures` when you build it instead."))
     end
 
     if coherent_scattering
@@ -247,6 +283,23 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
     end
     # now the ones for the synthesis
     linelist = filter_linelist(linelist, wls, line_buffer)
+
+    # A NamedTuple is sugar for "build the departure coefficients for me".  Done here, after the
+    # linelist has been cut to the window, so that only the grids owning a tagged transition IN THIS
+    # WINDOW are opened -- a Na D synthesis needs no Ca file installed.  Returns `nothing`, i.e.
+    # plain LTE, when no eligible transition is in the window.
+    if nlte isa NamedTuple
+        # Default vmic to the synthesis's own (it is a grid axis) and grid_dir to `nlte_grid_dir`,
+        # but let anything named in the NamedTuple itself win.
+        defaults = isnothing(nlte_grid_dir) ? (; vmic) : (; vmic, grid_dir=nlte_grid_dir)
+        nlte = nlte_departures(atm, linelist, A_X; merge(defaults, nlte)...)
+    end
+    # Which line is which transition.  Computed once here rather than inside the threaded line loop.
+    line_nlte_tags = isnothing(nlte) ? nothing : nlte_tags(linelist, nlte.transitions)
+    if !isnothing(line_nlte_tags) && !any(>(0), line_nlte_tags)
+        nlte = nothing
+        line_nlte_tags = nothing
+    end
 
     if length(A_X) != MAX_ATOMIC_NUMBER || (A_X[1] != 12)
         throw(ArgumentError("A(H) must be a 92-element vector with A[1] == 12."))
@@ -296,12 +349,17 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
         vmic_eltype,
         eltype(abs_abundances),
         alpha_ref_eltype,
+        isnothing(nlte) ? Float64 : eltype(nlte.b_lower),
     )
     @assert α_type != Any "α_type inferred as Any — likely due to malformed linelist or atmosphere."
 
 
     #the absorption coefficient, α, for each wavelength and atmospheric layer
     α = Matrix{α_type}(undef, length(atm.layers), length(wls))
+    # The NLTE emissivity deviation, Σᵢ κᵢ(rᵢ − 1) with rᵢ = Sᵢ/B_ν, the companion to α.  Only lines
+    # with departure coefficients contribute, so it stays identically zero away from them and the
+    # LTE line loop never writes to it.  Allocated only when NLTE is on: it is the same size as α.
+    nlte_dev = isnothing(nlte) ? nothing : zeros(α_type, size(α))
     # each layer's absorption at reference λ. This isn't used with the "anchored" τ scheme.
     # α_ref = Vector{α_type}(undef, length(atm.layers))
     α_ref = (tau_scheme == "anchored") ? Vector{α_type}(undef, length(atm.layers)) : nothing
@@ -504,12 +562,25 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
     end
 
     line_absorption!(α, linelist_adjusted, wls, get_temps(atm), nₑs, number_densities, partition_funcs,
-                     vmic * 1e5, α_cntm; cutoff_threshold=line_cutoff_threshold)
+                     vmic * 1e5, α_cntm; cutoff_threshold=line_cutoff_threshold,
+                     nlte_tags=line_nlte_tags,
+                     b_lower=isnothing(nlte) ? nothing : nlte.b_lower,
+                     b_upper=isnothing(nlte) ? nothing : nlte.b_upper,
+                     dev=nlte_dev)
     interpolate_molecular_cross_sections!(α, molecular_cross_sections, wls, get_temps(atm), vmic,
                                           number_densities)
 
     # α now includes line opacity, so scattering_source dilutes the albedo in line cores
     full_source = coherent_scattering ? scattering_source(α, source_fn) : source_fn
+    # The NLTE line source function, as an additive correction so that the LTE expression above is
+    # left textually untouched (mathematically folding a factor of 1 into it is a no-op, but it is
+    # not a codegen no-op, and leaving it alone is what keeps an LTE run bit-identical).
+    # Emissivity η = α_abs·B + B·dev + α_scat·J, so S = η/α = [(1−a)B + aJ] + B·dev/α: the
+    # correction is the same with or without coherent scattering.  The stimulated-emission factor is
+    # common to `dev` and α and cancels, so this is formed from the raw accumulators.
+    if !isnothing(nlte)
+        full_source = full_source .+ source_fn .* ifelse.(α .> 0, nlte_dev ./ α, zero(α_type))
+    end
     flux, intensity, μ_grid, μ_weights = RadiativeTransfer.radiative_transfer(atm, α, full_source,
                                                                               mu_values;
                                                                               α_ref, I_scheme,
@@ -520,7 +591,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
         cntm .*= 1e-8
     end
 
-    SynthesisResult(; flux, cntm, intensity, alpha=α,
+    SynthesisResult(; flux, cntm, intensity, alpha=α, nlte_emissivity_deviation=nlte_dev,
                     mu_grid=collect(zip(μ_grid, μ_weights)), number_densities,
                     electron_number_density=nₑs, wavelengths=vcat(wls.wl_ranges_Å...),
                     subspectra=subspectrum_indices(wls))

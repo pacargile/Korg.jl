@@ -31,6 +31,7 @@ include("imports.jl")
     include("prune_linelist.jl")
     include("utils.jl")
     include("line_absorption.jl")
+    include("nlte.jl")
     include("qfactors.jl")
     @testset "Aqua automated checks" begin
         # unbound args has a false positive for Korg.Line because it's using a heuristic.  That

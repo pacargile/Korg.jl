@@ -37,6 +37,13 @@ from the return type of [`synthesize`](@ref), which is [`SynthesisResult`](@ref)
   - `vsini`: projected rotational velocity in km/s (default: 0). This calls [`apply_rotation`](@ref)
     under the hood.
   - `vmic`: microturbulent velocity in km/s (default: 1.0).
+  - `nlte` (default: `false`): `true` to apply NLTE departure coefficients to the eligible
+    transitions in the linelist (Na I D, Mg I b, Ca I 4226, Ca II H/K and the IR triplet, and 11
+    Fe I lines), interpolated from the published grids.  Requires the `.nlte` runtime grid files;
+    see [`Korg.nlte_departures`](@ref).  May also be a `NamedTuple` of `nlte_departures` keyword
+    arguments, or a [`Korg.NLTE`](@ref).
+  - `nlte_grid_dir` (default: `nothing`): where the `.nlte` runtime grid files live, overriding
+    `\$KORG_NLTE_DIR`.  Per-element `\$NLTE_GRID_*` variables still win over both.
   - `synthesize_kwargs`: additional keyword arguments passed to [`synthesize`](@ref). Note that if
     `vmic` is specified here, it will override the value passed to `synth`.
   - `format_A_X_kwargs`: additional keyword arguments passed to [`format_A_X`](@ref).
@@ -52,6 +59,8 @@ function synth(;
                R=Inf,
                vsini=0,
                vmic=1.0,
+               nlte=false,
+               nlte_grid_dir=nothing,
                synthesize_kwargs=Dict(),
                format_A_X_kwargs=Dict(),
                abundances...,)
@@ -79,8 +88,22 @@ function synth(;
 
     wavelengths = Korg.Wavelengths(wavelengths)
 
+    # `nlte=true` is sugar: synth knows Teff/logg (they are departure-coefficient grid axes that
+    # synthesize cannot recover from the atmosphere), so it can fill them in.  Pass a NamedTuple to
+    # override anything else nlte_departures takes, or a Korg.NLTE to supply coefficients directly.
+    nlte_arg = if nlte === false
+        nothing
+    elseif nlte === true
+        (; Teff, logg, vmic)
+    elseif nlte isa NamedTuple
+        merge((; Teff, logg, vmic), nlte)
+    else
+        nlte
+    end
+
     # synthesize kwargs currently must be symbols, which is annoying
-    spectrum = synthesize(atm, linelist, A_X, wavelengths; vmic, synthesize_kwargs...)
+    spectrum = synthesize(atm, linelist, A_X, wavelengths; vmic, nlte=nlte_arg, nlte_grid_dir,
+                          synthesize_kwargs...)
     flux = if rectify
         spectrum.flux ./ spectrum.cntm
     else

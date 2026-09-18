@@ -50,6 +50,23 @@ Korg.air_to_vacuum
 Korg.vacuum_to_air
 ```
 
+## NLTE
+
+Departure coefficients for selected lines.  See `src/nlte.jl` for the physics and for the
+provenance of the grids.
+
+```@docs
+Korg.NLTE
+Korg.nlte_departures
+Korg.NLTETransition
+Korg.NLTE_TRANSITIONS
+Korg.NLTE_ELEMENTS
+Korg.nlte_tags
+Korg.NLTEGrid
+Korg.read_nlte_grid
+Korg.nlte_grid_path
+```
+
 ## Misc
 
 ```@docs

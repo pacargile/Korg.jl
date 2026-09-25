@@ -100,6 +100,13 @@ function radiative_transfer(α, S, spatial_coord, μ_points, spherical;
 
     #type with which to preallocate arrays (enables autodiff)
     el_type = typeof(promote(spatial_coord[1], α[1], S[1], μ_surface_grid[1])[1])
+    # τ_buffer/integrand_buffer below also receive α .* (τ_ref ./ α_ref), so α_ref has to
+    # participate. Latent rather than live: every current caller that passes α_ref also passes
+    # a line-dependent α, so el_type is already wide enough. Widen it anyway — this is exactly
+    # the asymmetry that broke lambda_star_diagonal.
+    if !isnothing(α_ref)
+        el_type = promote_type(el_type, eltype(α_ref))
+    end
     # intensity at every for every μ, λ, and layer. This is returned.
     # initialize with zeros because not every ray will pass through every layer
     I = if startswith(I_scheme, "linear_flux_only") # may or may not end in _expint
@@ -221,11 +228,19 @@ function lambda_star_diagonal(atm::PlanarAtmosphere, α, μ_points;
                               α_ref=nothing,
                               τ_ref=isnothing(α_ref) ? nothing : get_tau_refs(atm))
     nlayers, nλ = size(α)
-    el_type = eltype(α)
     μ_grid, μ_weights = generate_mu_grid(μ_points)
     log_τ_ref = log.(τ_ref)
     # vertical (μ=1) anchored-τ integrand factor: τref/αref · ds/dz with ds/dz = 1
     integrand_factor = τ_ref ./ α_ref
+
+    # Buffers must hold what compute_tau_anchored! writes: α .* integrand_factor. Sizing them
+    # off eltype(α) alone breaks autodiff in the coherent-scattering path, where α is the
+    # *continuum* opacity — no line-parameter dependence, hence Float64 under ForwardDiff —
+    # while α_ref (and so integrand_factor) carries the Dual from synthesize's α_type. The
+    # setindex! into τ then throws MethodError(Float64, ::Dual). Same class as the fix in
+    # "Fix autodiff: size opacity buffers off the number densities, not just T"; promote_type
+    # is a no-op when everything is already Float64.
+    el_type = promote_type(eltype(α), eltype(integrand_factor))
 
     Λ = zeros(el_type, nlayers, nλ)
     τ = Vector{el_type}(undef, nlayers)
@@ -261,8 +276,11 @@ function lambda_star_diagonal_exact(atm::PlanarAtmosphere, α, μ_points;
                                     α_ref=nothing,
                                     τ_ref=isnothing(α_ref) ? nothing : get_tau_refs(atm))
     nlayers, nλ = size(α)
-    Λ = zeros(eltype(α), nlayers, nλ)
-    S_pulse = zeros(eltype(α), nlayers, nλ)
+    # promote against α_ref for the same reason as lambda_star_diagonal above, so the
+    # validation reference stays usable under autodiff too
+    el_type = isnothing(α_ref) ? eltype(α) : promote_type(eltype(α), eltype(α_ref))
+    Λ = zeros(el_type, nlayers, nλ)
+    S_pulse = zeros(el_type, nlayers, nλ)
     for j in 1:nlayers
         fill!(S_pulse, 0)
         @views S_pulse[j, :] .= 1
@@ -357,9 +375,16 @@ function solve_scattering_source_function(atm::PlanarAtmosphere, α_abs, α_scat
         lambda_star_diagonal(atm, α_tot, μ_points; α_ref=α_ref, τ_ref=τ_ref) : lambda_diag
     denom = 1 .- a .* Λ                                  # ALI implicit denominator, in (0, 1]
 
-    S = copy(B)                                          # initial guess: the S = B thermal answer
+    # B is the Planck function, so it depends only on T and stays Float64 even when the synthesis
+    # is being differentiated — but S picks up the Dual type from J and Λ on the first ALI update
+    # below. Type the working copy and the Ng history for the PROMOTED element type, or
+    # `push!(history, copy(S))` tries to store a Dual matrix in a Vector{Matrix{Float64}}.
+    # promote_type is a no-op when every input is already Float64.
+    S_el = promote_type(eltype(B), eltype(a), eltype(Λ),
+                       isnothing(α_ref) ? eltype(B) : eltype(α_ref))
+    S = S_el.(B)                                         # initial guess: the S = B thermal answer
     history = Vector{typeof(S)}()
-    Δ = convert(eltype(S), Inf)
+    Δ = convert(S_el, Inf)
     iters = 0
     for n in 1:maxiter
         iters = n

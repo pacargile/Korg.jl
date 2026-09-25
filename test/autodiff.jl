@@ -20,6 +20,47 @@
         @test .!any(isnan.(J))
     end
 
+    @testset "autodiff through coherent scattering" begin
+        # Regression test for the buffer-typing bug fixed alongside this test. With
+        # coherent_scattering=true the scattering solver is handed the CONTINUUM opacity, which
+        # carries no line-parameter dependence and is therefore Float64 under ForwardDiff, while
+        # α_ref (and so the anchored-τ integrand factor, Λ*, and the ALI source function) is Dual.
+        # Buffers sized off eltype(α) alone then threw MethodError(Float64, ::Dual) — first in
+        # lambda_star_diagonal's τ/integrand_buffer, then in solve_scattering_source_function's
+        # Ng-acceleration history, which is typed off the (Float64) Planck function B.
+        #
+        # Nothing else in the suite exercises coherent_scattering at all, let alone under AD,
+        # which is why the bug survived. Keep this test.
+        atm = Korg.read_model_atmosphere("data/sun.mod")
+        ll = filter(l -> 5165e-8 <= l.wl <= 5185e-8, Korg.get_VALD_solar_linelist())
+        A_X = format_A_X(0.0)
+        wls = (5170.0, 5180.0, 0.02)
+
+        loss(t) = let l2 = [Korg.Line(l; log_gf=l.log_gf + t) for l in ll]
+            s = synthesize(atm, l2, A_X, wls; coherent_scattering=true,
+                           electron_number_density_warn_threshold=Inf)
+            sum(abs2, 1 .- s.flux ./ s.cntm)
+        end
+
+        g = ForwardDiff.derivative(loss, 0.0)
+        @test isfinite(g)
+        @test !iszero(g)   # a dropped-partials regression would give exactly 0, not a throw
+
+        # the derivative must be RIGHT, not merely finite: a type fix that silently discards
+        # partials still returns a number. The scattering solver converges to tol=1e-4 on
+        # max|ΔS/S|, so compare against a central difference at a loose-but-meaningful tolerance.
+        h = 1e-5
+        fd = (loss(h) - loss(-h)) / 2h
+        @test g ≈ fd rtol=1e-3
+
+        # coherent_scattering must actually change the answer, or the test above proves nothing
+        lte = synthesize(atm, ll, A_X, wls; coherent_scattering=false,
+                         electron_number_density_warn_threshold=Inf)
+        coh = synthesize(atm, ll, A_X, wls; coherent_scattering=true,
+                         electron_number_density_warn_threshold=Inf)
+        @test lte.flux != coh.flux
+    end
+
     @testset "autodiff just one abundance" begin
         atm = Korg.read_model_atmosphere("data/sun.mod")
         linelist = [Korg.Line(6000e-8, 0.0, Korg.species"C I", 0.0)]
